@@ -72,11 +72,8 @@ class TtokenApp(App):
             res = requests.post(BACKEND_URL, json={"ideia": ideia}, timeout=90)
             data = res.json()
             if data.get("success"):
-                msg = (
-                    f"OK IA: {data.get('api_llm')} | Video: {data.get('api_video')}\n\n"
-                    f"{data.get('texto')}\n\n"
-                    f"Link do Vídeo:\n{data.get('video_url')}"
-                )
+                msg = (f"OK IA: {data.get('api_llm')} | Video: {data.get('api_video')}\n\n"
+                       f"{data.get('texto')}\n\nLink do Vídeo:\n{data.get('video_url')}")
             else:
                 msg = f"ERRO: {data.get('error')}"
         except Exception:
