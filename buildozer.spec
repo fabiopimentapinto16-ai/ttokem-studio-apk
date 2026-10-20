@@ -4,13 +4,20 @@ package.name = ttokenstudio
 package.domain = com.ttoken
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
-version = 1.0.1
-requirements = python3,kivy,requests,pyjnius
+source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests
+version = 1.0.2
+requirements = python3,kivy==2.3.0,requests,urllib3,idna,charset-normalizer,certifi
 orientation = portrait
 fullscreen = 0
 android.permissions = INTERNET,ACCESS_NETWORK_STATE
-android.api = 34
-android.ndk = 25b
+android.api = 33
 android.minapi = 21
-android.archs = arm64-v8a,armeabi-v7a
+android.ndk = 25b
+android.archs = arm64-v8a
 android.accept_sdk_license = True
+android.enable_androidx = True
+p4a.branch = v2024.01.21
+
+[buildozer]
+log_level = 1
+warn_on_root = 0

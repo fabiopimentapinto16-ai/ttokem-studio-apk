@@ -1,0 +1,6 @@
+.config/
+sample_data/
+.buildozer/
+bin/
+__pycache__/
+*.log
