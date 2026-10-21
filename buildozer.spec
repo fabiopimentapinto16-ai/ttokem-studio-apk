@@ -5,7 +5,7 @@ package.domain = com.ttoken
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests
-version = 1.0.2
+version = 1.1.0
 requirements = python3,kivy==2.3.0,requests,urllib3,idna,charset-normalizer,certifi
 orientation = portrait
 fullscreen = 0
