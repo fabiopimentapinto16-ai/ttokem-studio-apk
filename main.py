@@ -3,6 +3,8 @@
 Fluxo: ideia -> backend (Ttokem + maestro de IAs + maestro de video) -> legenda
 e video prontos. O app NUNCA posta sozinho: o usuario da o ultimo toque.
 """
+import json
+import os
 import threading
 import time
 import webbrowser
@@ -24,11 +26,47 @@ from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
+from kivy.utils import platform
 
-API = "https://ttoken-backend-8ba2a.containers.snapdeploy.app"
+from maestro import Maestro          # motor embutido: funciona sem servidor
+from pipeline import produzir
+from video import VideoMaestro
+
+SharedStorage = ShareSheet = autoclass = None
+if platform == "android":
+    try:
+        from androidstorage4kivy import ShareSheet, SharedStorage
+        from jnius import autoclass
+    except Exception:                # biblioteca ausente: cai no fallback por link
+        SharedStorage = ShareSheet = autoclass = None
+
+API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 480          # desiste depois de 8 minutos
-WAKE_WAIT = 150         # tempo maximo esperando o servidor acordar
+WAKE_WAIT = 180         # tempo maximo esperando o servidor acordar
+UA = ("Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) "
+      "Chrome/124.0 Mobile Safari/537.36")
+
+# chaves que o usuario pode guardar so no celular (modo sem servidor)
+CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
+          ("openrouter", "OPENROUTER (texto, varios modelos)", "OPENROUTER_API_KEY"),
+          ("gemini", "GEMINI (texto)", "GEMINI_API_KEY"),
+          ("hf", "HUGGING FACE (texto)", "HF_TOKEN"),
+          ("magichour", "MAGIC HOUR (video)", "MAGIC_HOUR_API_KEY"),
+          ("fal", "FAL.AI (video)", "FAL_KEY")]
+TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf")
+
+# redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
+SOCIAIS = [("Instagram", "com.instagram.android"),
+           ("TikTok", "com.zhiliaoapp.musically"),
+           ("YouTube", "com.google.android.youtube"),
+           ("WhatsApp", "com.whatsapp"),
+           ("Facebook", "com.facebook.katana"),
+           ("X", "com.twitter.android"),
+           ("Telegram", "org.telegram.messenger"),
+           ("Outros", None)]
+PRECISA_VIDEO = {"com.instagram.android", "com.zhiliaoapp.musically",
+                 "com.google.android.youtube"}
 
 # ------------------------------------------------------------------ paleta
 BG_TOP = (0.030, 0.030, 0.085, 1)
@@ -228,6 +266,29 @@ class TtokenApp(App):
         col.add_widget(tlabel("IDEIA  >  VIDEO  >  LEGENDA, EM UM TOQUE", 11, MUTED,
                               align="center"))
 
+        # abas: VIDEO | CHAT | CODIGO
+        abas = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+        self.abas = {}
+        for chave, nome in (("video", "VIDEO"), ("chat", "CHAT"), ("code", "CODIGO")):
+            c = Chip(nome)
+            c.valor, c.active = chave, chave == "video"
+            c.bind(on_release=lambda w: self._aba(w.valor))
+            self.abas[chave] = c
+            abas.add_widget(c)
+        col.add_widget(abas)
+        self.painel = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(16))
+        self.painel.bind(minimum_height=self.painel.setter("height"))
+        col.add_widget(self.painel)
+        self.p_video = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(16))
+        self.p_video.bind(minimum_height=self.p_video.setter("height"))
+        self.p_chat = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.p_chat.bind(minimum_height=self.p_chat.setter("height"))
+        self.p_code = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.p_code.bind(minimum_height=self.p_code.setter("height"))
+        self.chat_hist = []
+        self._montar_chat()
+        self._montar_code()
+
         # cartao de entrada
         entrada = Glass(border=alpha(CYAN, 0.45))
         entrada.add_widget(tlabel("SUA IDEIA", 11, CYAN, bold=True))
@@ -249,21 +310,35 @@ class TtokenApp(App):
             self.chips.append(c)
             linha.add_widget(c)
         entrada.add_widget(linha)
-        col.add_widget(entrada)
+        self.p_video.add_widget(entrada)
 
         self.btn = NeonButton("GERAR VIDEO + LEGENDA")
         self.btn.bind(on_release=self.iniciar)
-        col.add_widget(self.btn)
+        self.p_video.add_widget(self.btn)
+
+        self.llm, self.videos = Maestro(), VideoMaestro()
+        self.chaves, self._shared, self._dl = {}, None, None
+        self._ultimo_erro = ""
+        self.modo_lb = tlabel("", 11, MUTED, align="center")
+        self.p_video.add_widget(self.modo_lb)
+        chip_chaves = Chip("Chaves (usar sem servidor)", height=38)
+        chip_chaves.bind(on_release=self._alternar_chaves)
+        self.p_video.add_widget(chip_chaves)
+        self.chaves_slot = BoxLayout(orientation="vertical", size_hint_y=None)
+        self.chaves_slot.bind(minimum_height=self.chaves_slot.setter("height"))
+        self.p_video.add_widget(self.chaves_slot)
 
         # area dinamica: progresso / resultado / erro
         self.slot = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(14))
         self.slot.bind(minimum_height=self.slot.setter("height"))
-        col.add_widget(self.slot)
+        self.p_video.add_widget(self.slot)
+        self.painel.add_widget(self.p_video)
 
-        col.add_widget(tlabel("O app nunca posta por voce: voce confere e toca em "
-                              "postar na rede que quiser.", 11, MUTED, align="center"))
+        col.add_widget(tlabel("O app nunca posta sozinho: voce confere e toca em postar na "
+                              "rede que quiser.", 11, MUTED, align="center"))
         scroll.add_widget(col)
         root.add_widget(scroll)
+        self._carregar_chaves()
         return root
 
     # --------------------------------------------------------- interacao
@@ -280,8 +355,9 @@ class TtokenApp(App):
         self.btn.disabled = True
         self.btn.text = "PROCESSANDO..."
         self._montar_progresso()
-        threading.Thread(target=self._trabalhar, args=(ideia, self.plataforma),
-                         daemon=True).start()
+        self._shared = self._dl = None
+        alvo = self._rodar_local if self._tem_chaves() else self._trabalhar
+        threading.Thread(target=alvo, args=(ideia, self.plataforma), daemon=True).start()
 
     # --------------------------------------------------------- progresso
     def _montar_progresso(self):
@@ -327,14 +403,16 @@ class TtokenApp(App):
     # ------------------------------------------------------------- rede
     def _trabalhar(self, ideia, plataforma):
         s = requests.Session()
-        s.max_redirects = 5            # servidor dormindo pode redirecionar em loop
+        s.max_redirects = 10           # servidor dormindo pode redirecionar em loop
+        s.headers.update({"User-Agent": UA, "Accept": "application/json"})
         try:
             acordou = self._acordar(s)
             if acordou is None:          # ja mostrou o erro especifico
                 return
             if not acordou:
-                self._ui(self._erro, "O servidor nao respondeu. Tente de novo em "
-                         "1 minuto (ele dorme quando fica parado).")
+                self._ui(self._erro, "O servidor nao respondeu (ultimo erro: %s).\n\n"
+                         "Tente de novo em 1 minuto ou toque em \"Chaves\" para usar o "
+                         "app sem servidor." % (self._ultimo_erro or "sem resposta"))
                 return
             job, ultimo = None, ""
             for _ in range(3):
@@ -389,20 +467,286 @@ class TtokenApp(App):
         while time.time() < limite:
             try:
                 r = s.get(API + "/health", timeout=15)
-                dados = r.json() if r.status_code == 200 else None
-                if isinstance(dados, dict) and dados.get("ok"):
+                try:
+                    dados = r.json()
+                except Exception:
+                    dados = None
+                if r.status_code == 200 and isinstance(dados, dict) and dados.get("ok"):
                     if not dados.get("ias"):
                         self._ui(self._erro, "O servidor esta sem nenhuma chave de IA "
                                  "configurada (GROQ_API_KEY, GEMINI_API_KEY...).")
                         return None
                     return True
-            except Exception:
-                pass
+                self._ultimo_erro = "HTTP %d (%s)" % (
+                    r.status_code, (r.headers.get("content-type") or "?")[:30])
+            except Exception as e:
+                self._ultimo_erro = "%s: %s" % (type(e).__name__, str(e)[:80])
             if primeira:
                 self._ui(self._progresso, 0, "Acordando o servidor (ate 1 minuto)...")
                 primeira = False
             time.sleep(4)
         return False
+
+    # ------------------------------------------------------------ abas
+    def _aba(self, chave):
+        for k, c in self.abas.items():
+            c.active = (k == chave)
+        self.painel.clear_widgets()
+        self.painel.add_widget({"video": self.p_video, "chat": self.p_chat,
+                                "code": self.p_code}[chave])
+
+    def _perguntar(self, mensagem, historico, max_tokens=1500):
+        """Chat/codigo: usa suas chaves no celular, senao o servidor (/api/chat)."""
+        if self._tem_chaves():
+            msgs = [{"role": "system", "content": "Voce e o assistente do Ttoken Studio: "
+                     "roteiros, legendas, ideias de video e codigo (Python/Kivy). "
+                     "Responda em portugues, claro e pratico."}]
+            msgs += [h for h in historico[-10:]]
+            msgs.append({"role": "user", "content": mensagem})
+            return self.llm.chat(msgs, max_tokens=max_tokens)[0]
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA})
+        if self._acordar(s) is not True:
+            raise RuntimeError("servidor indisponivel (%s)" % (self._ultimo_erro or "sem resposta"))
+        r = s.post(API + "/api/chat", json={"mensagem": mensagem, "historico": historico[-10:]},
+                   timeout=120)
+        if r.status_code == 429:
+            raise RuntimeError("limite de pedidos por hora atingido")
+        r.raise_for_status()
+        return r.json().get("resposta") or "(sem resposta)"
+
+    def _montar_chat(self):
+        self.chat_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
+        self.chat_lista.bind(minimum_height=self.chat_lista.setter("height"))
+        self.p_chat.add_widget(self.chat_lista)
+        self._balao("Ola! Sou o Ttoken. Peca roteiro, legenda, ideia de video, codigo "
+                    "Python/Kivy ou so converse.", False)
+        card = Glass(border=alpha(VIOLET, 0.5))
+        self.chat_inp = TextInput(hint_text="Digite sua mensagem...", multiline=True,
+                                  size_hint_y=None, height=dp(72), font_size=sp(15),
+                                  background_normal="", background_active="",
+                                  background_color=(0, 0, 0, 0), foreground_color=TEXT,
+                                  hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
+        card.add_widget(self.chat_inp)
+        env = NeonButton("ENVIAR", height=dp(46))
+        env.bind(on_release=self._enviar_chat)
+        card.add_widget(env)
+        self.p_chat.add_widget(card)
+
+    def _balao(self, texto, meu):
+        g = Glass(border=alpha(CYAN if meu else VIOLET, 0.35))
+        g.add_widget(tlabel(texto, 14, TEXT))
+        self.chat_lista.add_widget(g)
+        return g
+
+    def _enviar_chat(self, *_):
+        msg = (self.chat_inp.text or "").strip()
+        if not msg:
+            return
+        self.chat_inp.text = ""
+        self._balao(msg, True)
+        espera = self._balao("...", False)
+        hist = list(self.chat_hist)
+        self.chat_hist.append({"role": "user", "content": msg})
+
+        def trabalho():
+            try:
+                resp = self._perguntar(msg, hist)
+            except Exception as e:
+                resp = "Falha na conversa: %s" % str(e)[:160]
+            self.chat_hist.append({"role": "assistant", "content": resp})
+            self._ui(self._trocar_balao, espera, resp)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _trocar_balao(self, balao, texto):
+        self.chat_lista.remove_widget(balao)
+        self._balao(texto, False)
+
+    def _montar_code(self):
+        g = Glass(border=alpha(CYAN, 0.45))
+        g.add_widget(tlabel("GERAR CODIGO", 11, CYAN, bold=True))
+        g.add_widget(tlabel("Descreva o app ou trecho. A IA escreve o codigo; para virar APK, "
+                            "envie ao GitHub e o Actions compila na nuvem.", 12, MUTED))
+        self.code_inp = TextInput(hint_text="Ex: tela Kivy com botao que conta cliques...",
+                                  multiline=True, size_hint_y=None, height=dp(96),
+                                  font_size=sp(15), background_normal="", background_active="",
+                                  background_color=(0, 0, 0, 0), foreground_color=TEXT,
+                                  hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
+        g.add_widget(self.code_inp)
+        b = NeonButton("GERAR CODIGO", height=dp(48))
+        b.bind(on_release=self._gerar_codigo)
+        g.add_widget(b)
+        self.p_code.add_widget(g)
+        self.code_slot = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.code_slot.bind(minimum_height=self.code_slot.setter("height"))
+        self.p_code.add_widget(self.code_slot)
+
+    def _gerar_codigo(self, *_):
+        pedido = (self.code_inp.text or "").strip()
+        self.code_slot.clear_widgets()
+        if not pedido:
+            self.code_slot.add_widget(tlabel("Descreva o que voce quer.", 13, MAGENTA))
+            return
+        self.code_slot.add_widget(tlabel("Gerando codigo...", 13, MUTED))
+        prompt = ("Gere codigo completo e funcional. Prefira Python/Kivy se for app Android. "
+                  "So o codigo e comentarios curtos.\n\nPedido: " + pedido)
+
+        def trabalho():
+            try:
+                resp = self._perguntar(prompt, [], max_tokens=2500)
+            except Exception as e:
+                resp = "Erro: %s" % str(e)[:160]
+            self._ui(self._mostrar_codigo, resp)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _mostrar_codigo(self, resp):
+        self.code_slot.clear_widgets()
+        card = Glass(border=alpha(VIOLET, 0.5))
+        card.add_widget(tlabel(resp, 12, TEXT))
+        cp = Chip("Copiar codigo", height=38)
+        cp.bind(on_release=lambda w: self._copiar(w, resp, "Copiar codigo"))
+        card.add_widget(cp)
+        self.code_slot.add_widget(card)
+
+    # ------------------------------------------- modo sem servidor (no celular)
+    def _rodar_local(self, ideia, plataforma):
+        """Mesmo pipeline do servidor, rodando aqui com as chaves do usuario."""
+        resultado = {}
+
+        def report(**kw):
+            resultado.update(kw)
+            if kw.get("status") == "pronto":
+                self._dl = resultado.get("_dl")
+                self._ui(self._pronto, dict(resultado))
+            elif kw.get("status") == "erro":
+                self._ui(self._erro, kw.get("erro", "Erro desconhecido"))
+            elif "etapa" in kw:
+                self._ui(self._progresso, int(kw.get("passo", 0)), kw["etapa"])
+
+        try:
+            self._ui(self._progresso, 0, "Preparando (modo sem servidor)...")
+            produzir(ideia, plataforma, self.llm, self.videos, report)
+        except Exception as e:
+            self._ui(self._erro, "Falha inesperada: %s" % e)
+
+    def _arq_chaves(self):
+        return os.path.join(getattr(self, "user_data_dir", None) or ".", "chaves.json")
+
+    def _carregar_chaves(self):
+        try:
+            with open(self._arq_chaves(), encoding="utf-8") as f:
+                self.chaves = json.load(f)
+        except Exception:
+            self.chaves = {}
+        self._aplicar_chaves()
+
+    def _aplicar_chaves(self):
+        for campo, _rot, var in CHAVES:
+            v = (self.chaves.get(campo) or "").strip()
+            if v:
+                os.environ[var] = v
+            else:
+                os.environ.pop(var, None)
+        self.modo_lb.text = ("Modo: no celular (suas chaves, sem servidor)"
+                             if self._tem_chaves() else "Modo: servidor na nuvem")
+
+    def _tem_chaves(self):
+        return any((self.chaves.get(c) or "").strip() for c in TEXTO_KEYS)
+
+    def _alternar_chaves(self, *_):
+        if self.chaves_slot.children:
+            self.chaves_slot.clear_widgets()
+            return
+        card = Glass(border=alpha(VIOLET, 0.5))
+        card.add_widget(tlabel("CHAVES (ficam so neste celular)", 11, VIOLET, bold=True))
+        card.add_widget(tlabel("Com pelo menos uma chave de IA de texto o app funciona sem "
+                               "servidor. Chave de video e opcional (sem ela voce recebe a "
+                               "legenda). Deixe vazio para usar o servidor.", 12, MUTED))
+        self._campos = {}
+        for campo, rotulo, _var in CHAVES:
+            card.add_widget(tlabel(rotulo, 11, MUTED, bold=True))
+            ti = TextInput(text=self.chaves.get(campo, ""), password=True, multiline=False,
+                           size_hint_y=None, height=dp(42), font_size=sp(14),
+                           background_normal="", background_active="",
+                           background_color=(1, 1, 1, 0.07), foreground_color=TEXT,
+                           cursor_color=CYAN, padding=[dp(10), dp(11)])
+            self._campos[campo] = ti
+            card.add_widget(ti)
+        salvar = NeonButton("SALVAR CHAVES", height=dp(48))
+        salvar.bind(on_release=self._salvar_chaves)
+        card.add_widget(salvar)
+        self.chaves_slot.add_widget(card)
+
+    def _salvar_chaves(self, *_):
+        self.chaves = {c: self._campos[c].text.strip() for c, _r, _v in CHAVES}
+        try:
+            with open(self._arq_chaves(), "w", encoding="utf-8") as f:
+                json.dump(self.chaves, f)
+        except Exception:
+            pass
+        self._aplicar_chaves()
+        self.chaves_slot.clear_widgets()
+
+    # ------------------------------------------------- postar nas redes
+    def _aviso(self, msg):
+        if hasattr(self, "aviso_post"):
+            self.aviso_post.text = msg
+
+    def _compartilhar(self, botao, nome, pacote):
+        """Abre o app da rede (ja logado no celular) com o video; legenda na area
+        de transferencia. O usuario so cola e toca em postar."""
+        Clipboard.copy(self.texto)
+        if not self.video_url and (pacote in PRECISA_VIDEO):
+            self._aviso("%s precisa do video e ele nao ficou pronto. Gere de novo." % nome)
+            return
+        if platform != "android" or ShareSheet is None:
+            if self.video_url:
+                webbrowser.open(self.video_url)
+            self._aviso("Legenda copiada. (Compartilhar direto so funciona no Android.)")
+            return
+        self._aviso("Preparando o video para %s..." % nome)
+        threading.Thread(target=self._preparar_envio, args=(nome, pacote),
+                         daemon=True).start()
+
+    def _preparar_envio(self, nome, pacote):
+        try:
+            arq = self._baixar_video() if self.video_url else None
+        except Exception as e:
+            self._ui(self._aviso, "Nao consegui baixar o video (%s)." % str(e)[:60])
+            return
+        self._ui(self._abrir_rede, nome, pacote, arq)
+
+    def _baixar_video(self):
+        """Baixa o mp4 e salva em Filmes (galeria) para poder compartilhar."""
+        if self._shared:
+            return self._shared
+        destino = os.path.join(getattr(self, "user_data_dir", None) or ".", "ttoken_video.mp4")
+        r = requests.get(self.video_url, headers=self._dl, stream=True, timeout=120)
+        r.raise_for_status()
+        with open(destino, "wb") as f:
+            for pedaco in r.iter_content(65536):
+                f.write(pedaco)
+        env = autoclass("android.os.Environment")
+        self._shared = SharedStorage().copy_to_shared(destino, collection=env.DIRECTORY_MOVIES)
+        if not self._shared:
+            raise RuntimeError("nao consegui salvar na galeria")
+        return self._shared
+
+    def _abrir_rede(self, nome, pacote, arq):
+        self._sheet = ShareSheet()           # precisa continuar vivo enquanto compartilha
+        try:
+            if arq:
+                self._sheet.share_file(arq, app=pacote) if pacote else self._sheet.share_file(arq)
+            else:
+                (self._sheet.share_plain_text(self.texto, app=pacote) if pacote
+                 else self._sheet.share_plain_text(self.texto))
+            self._aviso("Legenda copiada: cole ao postar no %s." % nome)
+        except Exception:
+            try:                            # app nao instalado: deixa o usuario escolher
+                (self._sheet.share_file(arq) if arq else self._sheet.share_plain_text(self.texto))
+                self._aviso("%s nao abriu direto. Escolha o app na lista." % nome)
+            except Exception as e:
+                self._aviso("Nao consegui abrir o compartilhamento: %s" % str(e)[:60])
 
     @staticmethod
     def _ui(fn, *args):
@@ -424,6 +768,7 @@ class TtokenApp(App):
     def _pronto(self, s):
         self.texto = s.get("texto", "")
         self.video_url = s.get("video_url", "")
+        self._shared = None
         self.slot.clear_widgets()
         card = Glass(border=alpha(CYAN, 0.55))
         card.add_widget(tlabel("PRONTO PARA POSTAR", 11, CYAN, bold=True))
@@ -460,6 +805,19 @@ class TtokenApp(App):
             linha.add_widget(b2)
             linha.add_widget(b3)
             card.add_widget(linha)
+
+        card.add_widget(tlabel("POSTAR EM", 11, CYAN, bold=True))
+        card.add_widget(tlabel("Abre o app da rede que ja esta logado no seu celular, com o "
+                               "video pronto. A legenda vai copiada: e so colar.", 12, MUTED))
+        for i in range(0, len(SOCIAIS), 3):
+            linha = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+            for nome, pacote in SOCIAIS[i:i + 3]:
+                b = Chip(nome, height=40)
+                b.bind(on_release=lambda w, n=nome, p=pacote: self._compartilhar(w, n, p))
+                linha.add_widget(b)
+            card.add_widget(linha)
+        self.aviso_post = tlabel("", 12, MUTED)
+        card.add_widget(self.aviso_post)
         self.slot.add_widget(card)
         self._fim()
 
