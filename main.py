@@ -32,6 +32,7 @@ from kivy.utils import platform
 
 from maestro import Maestro          # motor embutido: funciona sem servidor
 from audio import SemTranscricao, transcrever
+import trending
 from pipeline import produzir
 from video import VideoMaestro
 
@@ -62,6 +63,8 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("hf", "HUGGING FACE (texto)", "HF_TOKEN"),
           ("magichour", "MAGIC HOUR (video)", "MAGIC_HOUR_API_KEY"),
           ("fal", "FAL.AI (video)", "FAL_KEY"),
+          ("youtube", "YOUTUBE (ver os mais assistidos)", "YOUTUBE_API_KEY"),
+          ("pexels", "PEXELS (banco de videos gratis, plano B)", "PEXELS_API_KEY"),
           ("build", "SENHA DE BUILD (compilar pelo Git, igual a BUILD_SECRET)",
            "TTOKEN_BUILD_SECRET")]
 LINKS = {"groq": "https://console.groq.com/keys",
@@ -69,7 +72,9 @@ LINKS = {"groq": "https://console.groq.com/keys",
          "gemini": "https://aistudio.google.com/apikey",
          "hf": "https://huggingface.co/settings/tokens",
          "magichour": "https://magichour.ai/developer",
-         "fal": "https://fal.ai/dashboard/keys"}
+         "fal": "https://fal.ai/dashboard/keys",
+         "youtube": "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
+         "pexels": "https://www.pexels.com/api/"}
 TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf")
 
 # redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
@@ -285,7 +290,8 @@ class TtokenApp(App):
         # abas: VIDEO | CHAT | CODIGO
         abas = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
         self.abas = {}
-        for chave, nome in (("video", "VIDEO"), ("chat", "CHAT"), ("code", "CODIGO")):
+        for chave, nome in (("video", "VIDEO"), ("chat", "CHAT"), ("code", "CODIGO"),
+                            ("trend", "TOP")):
             c = Chip(nome)
             c.valor, c.active = chave, chave == "video"
             c.bind(on_release=lambda w: self._aba(w.valor))
@@ -301,7 +307,10 @@ class TtokenApp(App):
         self.p_chat.bind(minimum_height=self.p_chat.setter("height"))
         self.p_code = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
         self.p_code.bind(minimum_height=self.p_code.setter("height"))
+        self.p_trend = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.p_trend.bind(minimum_height=self.p_trend.setter("height"))
         self.chat_hist = []
+        self._montar_trend()
         self._montar_chat()
         self._montar_code()
 
@@ -636,7 +645,7 @@ class TtokenApp(App):
             c.active = (k == chave)
         self.painel.clear_widgets()
         self.painel.add_widget({"video": self.p_video, "chat": self.p_chat,
-                                "code": self.p_code}[chave])
+                                "code": self.p_code, "trend": self.p_trend}[chave])
 
     def _perguntar(self, mensagem, historico, max_tokens=1500):
         """Chat/codigo: usa suas chaves no celular, senao o servidor (/api/chat)."""
@@ -793,6 +802,108 @@ class TtokenApp(App):
         self.git_links.bind(minimum_height=self.git_links.setter("height"))
         git.add_widget(self.git_links)
         self.code_slot.add_widget(git)
+
+    # ------------------------------------------- TOP: mais assistidos (inspiracao)
+    def _montar_trend(self):
+        g = Glass(border=alpha(MAGENTA, 0.5))
+        g.add_widget(tlabel("MAIS ASSISTIDOS AGORA", 11, MAGENTA, bold=True))
+        g.add_widget(tlabel("Veja o que esta bombando no YouTube (dados oficiais) e use o tema "
+                            "como INSPIRACAO para criar a sua ideia original. O app nao baixa "
+                            "videos de terceiros.", 12, MUTED))
+        self.trend_q = TextInput(hint_text="Tema (opcional): ex. cachorro, receita, futebol",
+                                 multiline=False, size_hint_y=None, height=dp(42),
+                                 font_size=sp(14), background_normal="", background_active="",
+                                 background_color=(1, 1, 1, 0.07), foreground_color=TEXT,
+                                 hint_text_color=alpha(MUTED, 0.7), cursor_color=CYAN,
+                                 padding=[dp(10), dp(11)])
+        g.add_widget(self.trend_q)
+        b = NeonButton("VER MAIS VISTOS", c1=MAGENTA, c2=VIOLET, height=dp(48))
+        b.bind(on_release=self._buscar_trend)
+        g.add_widget(b)
+        self.trend_msg = tlabel("Precisa da chave do YouTube (Chaves, aba VIDEO) ou do "
+                                "servidor com YOUTUBE_API_KEY.", 12, MUTED)
+        g.add_widget(self.trend_msg)
+        self.p_trend.add_widget(g)
+        self.trend_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.trend_lista.bind(minimum_height=self.trend_lista.setter("height"))
+        self.p_trend.add_widget(self.trend_lista)
+
+    @staticmethod
+    def _fmt_views(n):
+        if n >= 1000000:
+            return "%.1f mi" % (n / 1000000.0)
+        if n >= 1000:
+            return "%d mil" % (n // 1000)
+        return str(n)
+
+    def _buscar_trend(self, *_):
+        q = (self.trend_q.text or "").strip()
+        self.trend_msg.text = "Buscando..."
+        self.trend_lista.clear_widgets()
+
+        def trabalho():
+            try:
+                yk = (self.chaves.get("youtube") or "").strip()
+                if yk:                                   # direto do celular, com a sua chave
+                    itens = trending.mais_vistos("BR", q, 15, yk)
+                else:
+                    s = requests.Session()
+                    s.headers.update({"User-Agent": UA})
+                    if self._acordar(s) is not True:
+                        raise RuntimeError("servidor indisponivel (%s)" %
+                                           (self._ultimo_erro or "sem resposta"))
+                    r = s.get(API + "/api/tendencias", params={"q": q}, timeout=60)
+                    if r.status_code != 200:
+                        det = r.json().get("detail", r.text) if "json" in r.headers.get(
+                            "content-type", "") else r.text
+                        raise RuntimeError(str(det)[:160])
+                    itens = r.json()["itens"]
+                self._ui(self._mostrar_trend, itens)
+            except Exception as e:
+                self._ui(setattr, self.trend_msg, "text", "Nao deu: %s" % str(e)[:180])
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _mostrar_trend(self, itens):
+        self.trend_lista.clear_widgets()
+        self.trend_msg.text = ("%d videos, do mais visto para o menos." % len(itens)
+                               if itens else "Nada encontrado para esse tema.")
+        for n, it in enumerate(itens, 1):
+            c = Glass(border=alpha(CYAN if n <= 3 else VIOLET, 0.4))
+            c.add_widget(tlabel("[b]%d. %s[/b]" % (n, it["titulo"]), 14))
+            c.add_widget(tlabel("%s  |  %s views" % (it["canal"], self._fmt_views(it["views"])),
+                                12, MUTED))
+            linha = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+            usar = Chip("Usar como ideia", height=38)
+            usar.bind(on_release=lambda w, t=it["titulo"]: self._usar_ideia(t))
+            ver = Chip("Abrir", height=38)
+            ver.bind(on_release=lambda w, u=it["url"]: webbrowser.open(u))
+            linha.add_widget(usar)
+            linha.add_widget(ver)
+            c.add_widget(linha)
+            self.trend_lista.add_widget(c)
+
+    def _usar_ideia(self, titulo):
+        self.ideia.text = "Video original inspirado no tema: " + titulo
+        self._aba("video")
+
+    # --------------------------------------------------- salvar na galeria
+    def _salvar_galeria(self, *_):
+        if not self.video_url:
+            self._aviso("Nao ha video para salvar.")
+            return
+        if platform != "android" or SharedStorage is None:
+            webbrowser.open(self.video_url)
+            self._aviso("Abri o video no navegador: use 'baixar' de la.")
+            return
+        self._aviso("Baixando para a galeria...")
+
+        def trabalho():
+            try:
+                self._baixar_video()
+                self._ui(self._aviso, "Salvo na galeria (pasta Filmes).")
+            except Exception as e:
+                self._ui(self._aviso, "Nao consegui salvar (%s)." % str(e)[:60])
+        threading.Thread(target=trabalho, daemon=True).start()
 
     # --------------------------------------------------- arquivo e audio no chat
     def _escolher_arquivo(self, *_):
@@ -1233,6 +1344,9 @@ class TtokenApp(App):
             linha.add_widget(b2)
             linha.add_widget(b3)
             card.add_widget(linha)
+            b4 = Chip("Salvar na galeria", height=46)
+            b4.bind(on_release=self._salvar_galeria)
+            card.add_widget(b4)
 
         card.add_widget(tlabel("POSTAR EM", 11, CYAN, bold=True))
         card.add_widget(tlabel("Abre o app da rede que ja esta logado no seu celular, com o "
