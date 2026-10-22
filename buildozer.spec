@@ -5,11 +5,11 @@ package.domain = com.ttoken
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests
-version = 1.3.0
+version = 1.4.0
 requirements = python3,kivy==2.3.0,requests,urllib3,idna,charset-normalizer,certifi,pyjnius,android,androidstorage4kivy
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET,ACCESS_NETWORK_STATE
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO
 android.api = 33
 android.minapi = 21
 android.ndk = 25b

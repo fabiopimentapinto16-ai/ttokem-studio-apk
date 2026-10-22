@@ -3,8 +3,10 @@
 Fluxo: ideia -> backend (Ttokem + maestro de IAs + maestro de video) -> legenda
 e video prontos. O app NUNCA posta sozinho: o usuario da o ultimo toque.
 """
+import base64
 import json
 import os
+import re
 import threading
 import time
 import webbrowser
@@ -29,16 +31,22 @@ from kivy.uix.widget import Widget
 from kivy.utils import platform
 
 from maestro import Maestro          # motor embutido: funciona sem servidor
+from audio import SemTranscricao, transcrever
 from pipeline import produzir
 from video import VideoMaestro
 
-SharedStorage = ShareSheet = autoclass = None
+SharedStorage = ShareSheet = Chooser = autoclass = None
+pedir_permissao = Permission = None
 if platform == "android":
     try:
-        from androidstorage4kivy import ShareSheet, SharedStorage
+        from androidstorage4kivy import Chooser, ShareSheet, SharedStorage
         from jnius import autoclass
     except Exception:                # biblioteca ausente: cai no fallback por link
-        SharedStorage = ShareSheet = autoclass = None
+        SharedStorage = ShareSheet = Chooser = autoclass = None
+    try:
+        from android.permissions import Permission, request_permissions as pedir_permissao
+    except Exception:
+        pedir_permissao = Permission = None
 
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
@@ -53,7 +61,9 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("gemini", "GEMINI (texto)", "GEMINI_API_KEY"),
           ("hf", "HUGGING FACE (texto)", "HF_TOKEN"),
           ("magichour", "MAGIC HOUR (video)", "MAGIC_HOUR_API_KEY"),
-          ("fal", "FAL.AI (video)", "FAL_KEY")]
+          ("fal", "FAL.AI (video)", "FAL_KEY"),
+          ("build", "SENHA DE BUILD (compilar pelo Git, igual a BUILD_SECRET)",
+           "TTOKEN_BUILD_SECRET")]
 TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf")
 
 # redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
@@ -528,6 +538,17 @@ class TtokenApp(App):
                                   background_color=(0, 0, 0, 0), foreground_color=TEXT,
                                   hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
         card.add_widget(self.chat_inp)
+        self.anexo = None                      # (nome, texto) do arquivo escolhido
+        self.anexo_lb = tlabel("", 12, CYAN)
+        card.add_widget(self.anexo_lb)
+        ferr = BoxLayout(size_hint_y=None, height=dp(40), spacing=dp(8))
+        self.mic = Chip("MIC (falar)", height=40)
+        self.mic.bind(on_release=self._alternar_mic)
+        arq = Chip("ARQUIVO", height=40)
+        arq.bind(on_release=self._escolher_arquivo)
+        ferr.add_widget(self.mic)
+        ferr.add_widget(arq)
+        card.add_widget(ferr)
         env = NeonButton("ENVIAR", height=dp(46))
         env.bind(on_release=self._enviar_chat)
         card.add_widget(env)
@@ -544,14 +565,20 @@ class TtokenApp(App):
         if not msg:
             return
         self.chat_inp.text = ""
+        completo = msg
+        if self.anexo:
+            nome, texto = self.anexo
+            completo = "%s\n\n[Arquivo anexado: %s]\n%s" % (msg, nome, texto)
+            msg = "%s\n(anexo: %s)" % (msg, nome)
+            self.anexo, self.anexo_lb.text = None, ""
         self._balao(msg, True)
         espera = self._balao("...", False)
         hist = list(self.chat_hist)
-        self.chat_hist.append({"role": "user", "content": msg})
+        self.chat_hist.append({"role": "user", "content": completo})
 
         def trabalho():
             try:
-                resp = self._perguntar(msg, hist)
+                resp = self._perguntar(completo, hist)
             except Exception as e:
                 resp = "Falha na conversa: %s" % str(e)[:160]
             self.chat_hist.append({"role": "assistant", "content": resp})
@@ -607,6 +634,200 @@ class TtokenApp(App):
         cp.bind(on_release=lambda w: self._copiar(w, resp, "Copiar codigo"))
         card.add_widget(cp)
         self.code_slot.add_widget(card)
+        self.codigo_puro = self._extrair_codigo(resp)
+
+        git = Glass(border=alpha(CYAN, 0.45))
+        git.add_widget(tlabel("COMPILAR PELO GIT", 11, CYAN, bold=True))
+        git.add_widget(tlabel("Envia este codigo para o branch de teste 'ia-build' (o app "
+                              "principal fica intacto) e compila o APK no GitHub Actions.",
+                              12, MUTED))
+        self.arq_alvo = TextInput(text="main.py", multiline=False, size_hint_y=None,
+                                  height=dp(40), font_size=sp(14), background_normal="",
+                                  background_active="", background_color=(1, 1, 1, 0.07),
+                                  foreground_color=TEXT, cursor_color=CYAN,
+                                  padding=[dp(10), dp(9)])
+        git.add_widget(tlabel("ARQUIVO NO REPOSITORIO", 11, MUTED, bold=True))
+        git.add_widget(self.arq_alvo)
+        b1 = NeonButton("ENVIAR AO GIT", height=dp(46))
+        b1.bind(on_release=self._git_enviar)
+        b2 = NeonButton("COMPILAR APK", c1=VIOLET, c2=MAGENTA, height=dp(46))
+        b2.bind(on_release=self._git_compilar)
+        git.add_widget(b1)
+        git.add_widget(b2)
+        self.git_msg = tlabel("", 12, MUTED)
+        git.add_widget(self.git_msg)
+        self.git_links = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
+        self.git_links.bind(minimum_height=self.git_links.setter("height"))
+        git.add_widget(self.git_links)
+        self.code_slot.add_widget(git)
+
+    # --------------------------------------------------- arquivo e audio no chat
+    def _escolher_arquivo(self, *_):
+        if platform != "android" or Chooser is None:
+            self.anexo_lb.text = "Escolher arquivo so funciona no Android."
+            return
+        self._chooser = Chooser(self._arquivo_escolhido)
+        self._chooser.choose_content("*/*")
+
+    def _arquivo_escolhido(self, uris):
+        if not uris:
+            return
+        try:
+            caminho = SharedStorage().copy_from_shared(uris[0])
+            self._ui(self._anexar, caminho)
+        except Exception as e:
+            self._ui(setattr, self.anexo_lb, "text", "Nao consegui abrir o arquivo: %s" % str(e)[:60])
+
+    def _anexar(self, caminho):
+        """Texto/codigo vai junto da proxima mensagem. Imagem/PDF/audio: nao suportado aqui."""
+        try:
+            with open(caminho, "rb") as f:
+                bruto = f.read(300000)
+            texto = bruto.decode("utf-8")
+        except Exception:
+            self.anexo, self.anexo_lb.text = None, ("So arquivos de texto/codigo por enquanto "
+                                                    "(para voz use o MIC).")
+            return
+        nome = os.path.basename(caminho)
+        self.anexo = (nome, texto[:12000])
+        self.anexo_lb.text = "Anexo: %s (%d caracteres)" % (nome, min(len(texto), 12000))
+
+    def _alternar_mic(self, *_):
+        if getattr(self, "_rec", None):
+            return self._parar_mic()
+        if platform != "android" or autoclass is None:
+            self.anexo_lb.text = "Gravar voz so funciona no Android."
+            return
+        try:
+            if pedir_permissao:
+                pedir_permissao([Permission.RECORD_AUDIO])
+            ctx = autoclass("org.kivy.android.PythonActivity").mActivity
+            self._rec_arq = os.path.join(str(ctx.getCacheDir().getAbsolutePath()), "voz.m4a")
+            MR = autoclass("android.media.MediaRecorder")
+            rec = MR()
+            rec.setAudioSource(autoclass("android.media.MediaRecorder$AudioSource").MIC)
+            rec.setOutputFormat(autoclass("android.media.MediaRecorder$OutputFormat").MPEG_4)
+            rec.setAudioEncoder(autoclass("android.media.MediaRecorder$AudioEncoder").AAC)
+            rec.setOutputFile(self._rec_arq)
+            rec.prepare()
+            rec.start()
+            self._rec = rec
+            self.mic.text = "PARAR e enviar"
+        except Exception as e:
+            self._rec = None
+            self.anexo_lb.text = ("Permita o microfone e toque de novo (%s)" % str(e)[:50])
+
+    def _parar_mic(self):
+        rec, self._rec = self._rec, None
+        self.mic.text = "MIC (falar)"
+        try:
+            rec.stop()
+            rec.release()
+        except Exception:
+            pass
+        self.anexo_lb.text = "Transcrevendo..."
+        threading.Thread(target=self._transcrever_arq, args=(self._rec_arq,), daemon=True).start()
+
+    def _transcrever_arq(self, caminho):
+        try:
+            with open(caminho, "rb") as f:
+                dados = f.read()
+            texto = self._transcrever(dados)
+            self._ui(self._voz_pronta, texto)
+        except Exception as e:
+            self._ui(setattr, self.anexo_lb, "text", "Falha na voz: %s" % str(e)[:120])
+
+    def _transcrever(self, dados):
+        gk = (self.chaves.get("groq") or "").strip()
+        if gk:                                   # modo celular: fala direto com o Groq
+            return transcrever(dados, "voz.m4a", [gk])
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA})
+        if self._acordar(s) is not True:
+            raise RuntimeError("servidor indisponivel")
+        r = s.post(API + "/api/transcrever",
+                   json={"b64": base64.b64encode(dados).decode(), "nome": "voz.m4a"}, timeout=120)
+        if r.status_code != 200:
+            raise RuntimeError("HTTP %d: %s" % (r.status_code, r.text[:80]))
+        return r.json().get("texto", "")
+
+    def _voz_pronta(self, texto):
+        self.anexo_lb.text = "Voz transcrita - confira e toque em ENVIAR." if texto else "Nao ouvi nada."
+        self.chat_inp.text = (self.chat_inp.text + " " + texto).strip()
+
+    # ---------------------------------------------------- compilar pelo Git
+    @staticmethod
+    def _extrair_codigo(resp):
+        m = re.search(r"```[\w+-]*\n(.*?)```", resp, re.S)
+        return (m.group(1) if m else resp).strip() + "\n"
+
+    def _build_req(self, metodo, caminho, **kw):
+        senha = (self.chaves.get("build") or "").strip()
+        if not senha:
+            raise RuntimeError("Coloque a SENHA DE BUILD em Chaves (aba VIDEO) - a mesma "
+                               "BUILD_SECRET do servidor.")
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA, "X-Build-Secret": senha})
+        if self._acordar(s) is not True:
+            raise RuntimeError("servidor indisponivel (%s)" % (self._ultimo_erro or "sem resposta"))
+        r = s.request(metodo, API + caminho, timeout=60, **kw)
+        if r.status_code != 200:
+            try:
+                det = r.json().get("detail", r.text)
+            except Exception:
+                det = r.text
+            raise RuntimeError(str(det)[:200])
+        return r.json()
+
+    def _git_msg(self, txt):
+        self.git_msg.text = txt
+
+    def _git_enviar(self, *_):
+        alvo = (self.arq_alvo.text or "").strip()
+        self._git_msg("Enviando %s..." % alvo)
+
+        def trabalho():
+            try:
+                r = self._build_req("POST", "/api/build/arquivo",
+                                    json={"path": alvo, "conteudo": self.codigo_puro})
+                self._ui(self._git_msg, "Enviado: commit %s no branch %s. Agora toque em COMPILAR APK."
+                         % (r["commit"], r["branch"]))
+            except Exception as e:
+                self._ui(self._git_msg, "Falhou: %s" % e)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _git_compilar(self, *_):
+        self.git_links.clear_widgets()
+        self._git_msg("Iniciando o build...")
+        threading.Thread(target=self._git_trabalho, daemon=True).start()
+
+    def _git_trabalho(self):
+        try:
+            run = self._build_req("POST", "/api/build/iniciar")["run_id"]
+            t0 = time.time()
+            while time.time() - t0 < 25 * 60:
+                st = self._build_req("GET", "/api/build/status/%d" % run)
+                if st["status"] == "completed":
+                    self._ui(self._git_fim, run, st)
+                    return
+                self._ui(self._git_msg, "Compilando no GitHub... (%d min)" % ((time.time() - t0) // 60))
+                time.sleep(10)
+            self._ui(self._git_msg, "Demorou demais; acompanhe no GitHub Actions.")
+        except Exception as e:
+            self._ui(self._git_msg, "Falhou: %s" % e)
+
+    def _git_fim(self, run, st):
+        if st.get("conclusao") != "success":
+            self._git_msg("O build falhou. Veja o log no GitHub.")
+        else:
+            self._git_msg("APK pronto!")
+            senha = (self.chaves.get("build") or "").strip()
+            b = Chip("Baixar APK", height=40)
+            b.bind(on_release=lambda w: webbrowser.open("%s/api/build/apk/%d?s=%s" % (API, run, senha)))
+            self.git_links.add_widget(b)
+        v = Chip("Ver no GitHub", height=40)
+        v.bind(on_release=lambda w: webbrowser.open(st["url"]))
+        self.git_links.add_widget(v)
 
     # ------------------------------------------- modo sem servidor (no celular)
     def _rodar_local(self, ideia, plataforma):
