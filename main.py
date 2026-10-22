@@ -50,7 +50,7 @@ if platform == "android":
 
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
-MAX_WAIT = 480          # desiste depois de 8 minutos
+MAX_WAIT = 1200          # desiste depois de 8 minutos
 WAKE_WAIT = 180         # tempo maximo esperando o servidor acordar
 UA = ("Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/124.0 Mobile Safari/537.36")
@@ -64,6 +64,12 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("fal", "FAL.AI (video)", "FAL_KEY"),
           ("build", "SENHA DE BUILD (compilar pelo Git, igual a BUILD_SECRET)",
            "TTOKEN_BUILD_SECRET")]
+LINKS = {"groq": "https://console.groq.com/keys",
+         "openrouter": "https://openrouter.ai/keys",
+         "gemini": "https://aistudio.google.com/apikey",
+         "hf": "https://huggingface.co/settings/tokens",
+         "magichour": "https://magichour.ai/developer",
+         "fal": "https://fal.ai/dashboard/keys"}
 TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf")
 
 # redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
@@ -364,6 +370,11 @@ class TtokenApp(App):
             return
         self.btn.disabled = True
         self.btn.text = "PROCESSANDO..."
+        if pedir_permissao:
+            try:
+                pedir_permissao(["android.permission.POST_NOTIFICATIONS"])
+            except Exception:
+                pass
         self._montar_progresso()
         self._shared = self._dl = None
         alvo = self._rodar_local if self._tem_chaves() else self._trabalhar
@@ -385,6 +396,14 @@ class TtokenApp(App):
         card.add_widget(linha)
         self.barra = NeonBar()
         card.add_widget(self.barra)
+        self._t0, self._eta = time.time(), "Video: de 1 a 8 min conforme o gerador"
+        self.tempo_lb = tlabel(self._eta, 12, MUTED)
+        card.add_widget(self.tempo_lb)
+        card.add_widget(tlabel("Pode sair do app: avisamos com uma notificacao quando ficar pronto.",
+                               12, MUTED))
+        self._acompanhando = True
+        Clock.unschedule(self._tique)
+        Clock.schedule_interval(self._tique, 1)
         self.slot.add_widget(card)
         self._marcar(0)
         Animation(frac=0.08, d=0.6).start(self.barra)
@@ -403,9 +422,11 @@ class TtokenApp(App):
             else:
                 lb.color = MUTED
 
-    def _progresso(self, passo, etapa):
+    def _progresso(self, passo, etapa, eta=""):
         if not hasattr(self, "status"):
             return
+        if eta:
+            self._eta = eta
         self.status.text = etapa
         self._marcar(min(passo, 2))
         Animation(frac=min(0.97, (passo + 0.6) / 3), d=0.8).start(self.barra)
@@ -444,27 +465,46 @@ class TtokenApp(App):
             if not job:
                 self._ui(self._erro, "Nao consegui enviar a ideia: " + ultimo)
                 return
-            limite, falhas = time.time() + MAX_WAIT, 0
+            self._guardar_job(job)
+            self._acompanhar(s, job)
+        except Exception as e:
+            self._ui(self._erro, "Falha inesperada: %s" % e)
+
+    def _acompanhar(self, s, job):
+        limite, falhas = time.time() + MAX_WAIT, 0
+        try:
             while time.time() < limite:
                 time.sleep(POLL_EVERY)
                 try:
-                    st = s.get(API + "/api/status/" + job, timeout=20).json()
+                    r = s.get(API + "/api/status/" + job, timeout=20)
+                    if r.status_code == 404:
+                        self._limpar_job()
+                        self._ui(self._erro, "Esse pedido expirou no servidor. Gere de novo.")
+                        return
+                    st = r.json()
                     falhas = 0
                 except Exception:
                     falhas += 1
-                    if falhas >= 6:
-                        self._ui(self._erro, "Perdi a conexao com o servidor.")
+                    if falhas >= 15:      # ~1 min sem rede; o job fica guardado para retomar
+                        self._ui(self._erro, "Perdi a conexao. Abra o app de novo para retomar.")
                         return
                     continue
                 if st.get("status") == "processando":
+                    eta = ""
+                    if st.get("eta_min"):
+                        eta = "Estimativa: %s a %s min (%s)" % (
+                            st["eta_min"], st["eta_max"], st.get("gerador", "video"))
                     self._ui(self._progresso, int(st.get("passo", 0)),
-                             st.get("etapa", "Processando"))
+                             st.get("etapa", "Processando"), eta)
                 elif st.get("status") == "pronto":
+                    self._limpar_job()
                     self._ui(self._pronto, st)
                     return
                 else:
+                    self._limpar_job()
                     self._ui(self._erro, st.get("erro", "Erro desconhecido"))
                     return
+            self._limpar_job()
             self._ui(self._erro, "Tempo esgotado. Tente de novo em instantes.")
         except Exception as e:
             self._ui(self._erro, "Falha inesperada: %s" % e)
@@ -496,6 +536,99 @@ class TtokenApp(App):
                 primeira = False
             time.sleep(4)
         return False
+
+    # ------------------------------------------- notificacao e retomada
+    def _notificar(self, titulo, texto):
+        """Notificacao do Android (so se o app estiver em segundo plano)."""
+        if platform != "android" or autoclass is None or not getattr(self, "_fundo", False):
+            return
+        try:
+            from jnius import cast
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            Context = autoclass("android.content.Context")
+            nm = act.getSystemService(Context.NOTIFICATION_SERVICE)
+            String = autoclass("java.lang.String")
+
+            def cs(t):
+                return cast("java.lang.CharSequence", String(t))
+            NB = autoclass("android.app.Notification$Builder")
+            if autoclass("android.os.Build$VERSION").SDK_INT >= 26:
+                NC = autoclass("android.app.NotificationChannel")
+                nm.createNotificationChannel(NC("ttoken", cs("Ttoken Studio"), 3))
+                b = NB(act, "ttoken")
+            else:
+                b = NB(act)
+            intent = act.getPackageManager().getLaunchIntentForPackage(act.getPackageName())
+            pi = autoclass("android.app.PendingIntent").getActivity(act, 0, intent, 67108864)
+            b.setSmallIcon(act.getApplicationInfo().icon)
+            b.setContentTitle(cs(titulo))
+            b.setContentText(cs(texto))
+            b.setContentIntent(pi)
+            b.setAutoCancel(True)
+            nm.notify(1, b.build())
+        except Exception:
+            pass
+
+    def on_pause(self):
+        self._fundo = True
+        return True
+
+    def on_resume(self):
+        self._fundo = False
+        self._retomar()
+
+    def on_start(self):
+        self._fundo = False
+        self._retomar()
+
+    def _arq_job(self):
+        return os.path.join(getattr(self, "user_data_dir", None) or ".", "job.json")
+
+    def _guardar_job(self, job):
+        try:
+            with open(self._arq_job(), "w", encoding="utf-8") as f:
+                json.dump({"job": job, "t0": time.time()}, f)
+        except Exception:
+            pass
+
+    def _limpar_job(self):
+        try:
+            os.remove(self._arq_job())
+        except Exception:
+            pass
+
+    def _retomar(self):
+        """Se o app foi fechado/reaberto no meio de um video, continua acompanhando."""
+        if getattr(self, "_acompanhando", False):
+            return
+        try:
+            with open(self._arq_job(), encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return
+        if time.time() - d.get("t0", 0) > 3300:
+            self._limpar_job()
+            return
+        self._montar_progresso()
+        self.btn.disabled = True
+        self.btn.text = "PROCESSANDO..."
+        self._t0 = d["t0"]
+        self._eta = ""
+        threading.Thread(target=self._acompanhar_novo, args=(d["job"],), daemon=True).start()
+
+    def _acompanhar_novo(self, job):
+        s = requests.Session()
+        s.max_redirects = 10
+        s.headers.update({"User-Agent": UA, "Accept": "application/json"})
+        self._acompanhar(s, job)
+
+    def _tique(self, dt):
+        """Atualiza 'Estimativa: X a Y min - passou M:SS' a cada segundo."""
+        if not hasattr(self, "tempo_lb") or not getattr(self, "_acompanhando", False):
+            return
+        seg = int(time.time() - self._t0)
+        self.tempo_lb.text = ("%s  |  passou %d:%02d" % (self._eta, seg // 60, seg % 60)
+                              if self._eta else "passou %d:%02d" % (seg // 60, seg % 60))
 
     # ------------------------------------------------------------ abas
     def _aba(self, chave):
@@ -879,26 +1012,51 @@ class TtokenApp(App):
             self.chaves_slot.clear_widgets()
             return
         card = Glass(border=alpha(VIOLET, 0.5))
-        card.add_widget(tlabel("CHAVES (ficam so neste celular)", 11, VIOLET, bold=True))
-        card.add_widget(tlabel("Com pelo menos uma chave de IA de texto o app funciona sem "
-                               "servidor. Chave de video e opcional (sem ela voce recebe a "
-                               "legenda). Deixe vazio para usar o servidor.", 12, MUTED))
+        card.add_widget(tlabel("SUAS CHAVES (ficam so neste celular)", 11, VIOLET, bold=True))
+        card.add_widget(tlabel("1) Toque em \"Pegar chave gratis\", crie a chave no site e copie. "
+                               "2) Volte aqui, toque em \"Colar\". 3) SALVAR e depois TESTAR. "
+                               "Com uma chave de texto o app funciona sem servidor; a de video e "
+                               "opcional (sem ela voce recebe so a legenda).", 12, MUTED))
         self._campos = {}
         for campo, rotulo, _var in CHAVES:
             card.add_widget(tlabel(rotulo, 11, MUTED, bold=True))
             ti = TextInput(text=self.chaves.get(campo, ""), password=True, multiline=False,
+                           hint_text="cole a chave aqui", hint_text_color=alpha(MUTED, 0.6),
                            size_hint_y=None, height=dp(42), font_size=sp(14),
                            background_normal="", background_active="",
                            background_color=(1, 1, 1, 0.07), foreground_color=TEXT,
                            cursor_color=CYAN, padding=[dp(10), dp(11)])
             self._campos[campo] = ti
             card.add_widget(ti)
+            linha = BoxLayout(size_hint_y=None, height=dp(34), spacing=dp(8))
+            colar = Chip("Colar", height=34)
+            colar.bind(on_release=lambda w, t=ti: self._colar(t))
+            linha.add_widget(colar)
+            if campo in LINKS:
+                pegar = Chip("Pegar chave gratis", height=34)
+                pegar.bind(on_release=lambda w, u=LINKS[campo]: webbrowser.open(u))
+                linha.add_widget(pegar)
+            card.add_widget(linha)
         salvar = NeonButton("SALVAR CHAVES", height=dp(48))
         salvar.bind(on_release=self._salvar_chaves)
         card.add_widget(salvar)
+        testar = Chip("TESTAR MINHAS CHAVES", height=40)
+        testar.bind(on_release=self._testar_chaves)
+        card.add_widget(testar)
+        srv = Chip("TESTAR O SERVIDOR", height=40)
+        srv.bind(on_release=self._testar_servidor)
+        card.add_widget(srv)
+        self.teste_lb = tlabel("", 12, MUTED)
+        card.add_widget(self.teste_lb)
         self.chaves_slot.add_widget(card)
 
-    def _salvar_chaves(self, *_):
+    def _colar(self, campo):
+        try:
+            campo.text = (Clipboard.paste() or "").strip()
+        except Exception:
+            pass
+
+    def _gravar_campos(self):
         self.chaves = {c: self._campos[c].text.strip() for c, _r, _v in CHAVES}
         try:
             with open(self._arq_chaves(), "w", encoding="utf-8") as f:
@@ -906,7 +1064,52 @@ class TtokenApp(App):
         except Exception:
             pass
         self._aplicar_chaves()
-        self.chaves_slot.clear_widgets()
+
+    def _testar_chaves(self, *_):
+        self._gravar_campos()
+        if not self._tem_chaves():
+            self.teste_lb.text = "Cole pelo menos uma chave de texto (Groq e a mais rapida)."
+            return
+        self.teste_lb.text = "Testando suas chaves..."
+
+        def trabalho():
+            try:
+                linhas = []
+                for r in self.llm.testar():
+                    linhas.append(("OK   " if r["ok"] else "ERRO ") + r["provedor"] +
+                                  ("" if r["ok"] else ": " + r["erro"]))
+                if (self.chaves.get("magichour") or self.chaves.get("fal")):
+                    linhas.append("Video: a chave so e testada ao gerar um video.")
+                self._ui(setattr, self.teste_lb, "text", "\n".join(linhas))
+            except Exception as e:
+                self._ui(setattr, self.teste_lb, "text", "Falha no teste: %s" % e)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _testar_servidor(self, *_):
+        self.teste_lb.text = "Acordando o servidor e testando as IAs (pode levar 1 min)..."
+
+        def trabalho():
+            try:
+                s = requests.Session()
+                s.headers.update({"User-Agent": UA})
+                if self._acordar(s) is not True:
+                    self._ui(setattr, self.teste_lb, "text",
+                             "Servidor fora do ar (%s)." % (self._ultimo_erro or "sem resposta"))
+                    return
+                dados = s.get(API + "/api/testar", timeout=90).json()
+                linhas = [("OK   " if r["ok"] else "ERRO ") + r["provedor"] +
+                          ("" if r["ok"] else ": " + r["erro"]) for r in dados.get("textos", [])]
+                vids = [v["tipo"] for v in dados.get("videos", [])]
+                linhas.append("Videos no servidor: " + (", ".join(vids) or "nenhum"))
+                self._ui(setattr, self.teste_lb, "text", "\n".join(linhas))
+            except Exception as e:
+                self._ui(setattr, self.teste_lb, "text", "Falha no teste: %s" % str(e)[:140])
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _salvar_chaves(self, *_):
+        self._gravar_campos()
+        self.teste_lb.text = ("Salvo. Modo: no celular." if self._tem_chaves()
+                              else "Salvo. Sem chave de texto: o app usa o servidor.")
 
     # ------------------------------------------------- postar nas redes
     def _aviso(self, msg):
@@ -975,10 +1178,13 @@ class TtokenApp(App):
 
     # ---------------------------------------------------------- resultado
     def _fim(self):
+        self._acompanhando = False
+        Clock.unschedule(self._tique)
         self.btn.disabled = False
         self.btn.text = "GERAR VIDEO + LEGENDA"
 
     def _erro(self, msg):
+        self._notificar("Ttoken Studio", "Nao deu certo: " + str(msg)[:80])
         self.slot.clear_widgets()
         card = Glass(border=alpha(MAGENTA, 0.6))
         card.add_widget(tlabel("ALGO DEU ERRADO", 11, MAGENTA, bold=True))
@@ -987,6 +1193,7 @@ class TtokenApp(App):
         self._fim()
 
     def _pronto(self, s):
+        self._notificar("Seu video esta pronto!", "Abra o Ttoken Studio para postar.")
         self.texto = s.get("texto", "")
         self.video_url = s.get("video_url", "")
         self._shared = None
