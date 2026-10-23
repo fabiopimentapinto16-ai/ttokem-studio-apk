@@ -337,6 +337,32 @@ class TtokenApp(App):
         entrada.add_widget(linha)
         self.p_video.add_widget(entrada)
 
+        self.tipo, self.foto_b64, self.meu_video = "normal", "", None
+        opc = Glass(border=alpha(MAGENTA, 0.45))
+        opc.add_widget(tlabel("TIPO DE VIDEO", 11, MAGENTA, bold=True))
+        lt = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+        self.chips_tipo = []
+        for nome, valor in (("Normal", "normal"), ("Anuncio de produto", "anuncio")):
+            c = Chip(nome, height=38)
+            c.valor, c.active = valor, valor == "normal"
+            c.bind(on_release=self._escolher_tipo)
+            self.chips_tipo.append(c)
+            lt.add_widget(c)
+        opc.add_widget(lt)
+        opc.add_widget(tlabel("Anuncio: a IA escreve um comercial (gancho, produto em destaque, "
+                              "chamada para comprar). Com FOTO DO PRODUTO o video anima a sua foto.",
+                              12, MUTED))
+        self.foto_chip = Chip("FOTO DO PRODUTO (opcional)", height=38)
+        self.foto_chip.bind(on_release=self._escolher_foto)
+        opc.add_widget(self.foto_chip)
+        self.meuv_chip = Chip("USAR VIDEO MEU (Gemini, MiniMax, galeria)", height=38)
+        self.meuv_chip.bind(on_release=self._escolher_meu_video)
+        opc.add_widget(self.meuv_chip)
+        self.opc_lb = tlabel("Video do Gemini/MiniMax/outro app? Escolha-o aqui: o Ttoken "
+                             "escreve a legenda e voce posta.", 12, MUTED)
+        opc.add_widget(self.opc_lb)
+        self.p_video.add_widget(opc)
+
         self.btn = NeonButton("GERAR VIDEO + LEGENDA")
         self.btn.bind(on_release=self.iniciar)
         self.p_video.add_widget(self.btn)
@@ -386,6 +412,8 @@ class TtokenApp(App):
                 pass
         self._montar_progresso()
         self._shared = self._dl = None
+        if self.foto_b64 and self._tem_chaves():
+            self.opc_lb.text = "Foto do produto so e usada pelo servidor (modo nuvem)."
         alvo = self._rodar_local if self._tem_chaves() else self._trabalhar
         threading.Thread(target=alvo, args=(ideia, self.plataforma), daemon=True).start()
 
@@ -458,7 +486,9 @@ class TtokenApp(App):
             for _ in range(3):
                 try:
                     r = s.post(API + "/api/gerar", timeout=30,
-                               json={"ideia": ideia, "plataforma": plataforma})
+                               json={"ideia": ideia, "plataforma": plataforma,
+                                     "tipo": self.tipo, "imagem_b64": self.foto_b64,
+                                     "sem_video": bool(self.meu_video)})
                     if r.status_code == 429:
                         self._ui(self._erro, "Voce atingiu o limite de pedidos por hora. "
                                  "Tente de novo mais tarde.")
@@ -886,13 +916,101 @@ class TtokenApp(App):
         self.ideia.text = "Video original inspirado no tema: " + titulo
         self._aba("video")
 
+    # ------------------------------- tipo, foto do produto e video do usuario
+    def _escolher_tipo(self, chip):
+        self.tipo = chip.valor
+        for c in self.chips_tipo:
+            c.active = c is chip
+
+    def _pegar_arquivo(self, mime, destino):
+        if platform != "android" or Chooser is None:
+            self.opc_lb.text = "Escolher arquivo so funciona no Android."
+            return
+        self._chooser2 = Chooser(lambda uris: self._arquivo_pego(uris, destino))
+        self._chooser2.choose_content(mime)
+
+    def _arquivo_pego(self, uris, destino):
+        if not uris:
+            return
+        try:
+            caminho = SharedStorage().copy_from_shared(uris[0])
+        except Exception as e:
+            self._ui(setattr, self.opc_lb, "text", "Nao consegui abrir: %s" % str(e)[:60])
+            return
+        if destino == "foto":
+            threading.Thread(target=self._preparar_foto, args=(caminho,), daemon=True).start()
+        else:
+            self._ui(self._definir_meu_video, caminho)
+
+    def _escolher_foto(self, *_):
+        if self.foto_b64:                    # 2o toque remove a foto
+            self.foto_b64 = ""
+            self.foto_chip.text = "FOTO DO PRODUTO (opcional)"
+            self.opc_lb.text = "Foto removida."
+            return
+        self._pegar_arquivo("image/*", "foto")
+
+    @staticmethod
+    def _reduzir_foto(caminho):
+        """Reduz a foto (lado maior ~1400 px, JPEG 85) para caber no envio."""
+        if autoclass is None:
+            with open(caminho, "rb") as f:
+                dados = f.read()
+            if len(dados) > 3000000:
+                raise RuntimeError("foto grande demais")
+            return dados
+        BF = autoclass("android.graphics.BitmapFactory")
+        Opt = autoclass("android.graphics.BitmapFactory$Options")
+        o = Opt()
+        o.inJustDecodeBounds = True
+        BF.decodeFile(caminho, o)
+        amostra = 1
+        while max(o.outWidth, o.outHeight) / float(amostra) > 1400:
+            amostra *= 2
+        o2 = Opt()
+        o2.inSampleSize = amostra
+        bmp = BF.decodeFile(caminho, o2)
+        if bmp is None:
+            raise RuntimeError("nao consegui ler a imagem")
+        saida = autoclass("java.io.ByteArrayOutputStream")()
+        bmp.compress(autoclass("android.graphics.Bitmap$CompressFormat").JPEG, 85, saida)
+        return bytes(bytearray(saida.toByteArray()))
+
+    def _preparar_foto(self, caminho):
+        try:
+            dados = self._reduzir_foto(caminho)
+            self.foto_b64 = base64.b64encode(dados).decode()
+            self._ui(setattr, self.foto_chip, "text", "FOTO OK (toque para remover)")
+            self._ui(setattr, self.opc_lb, "text", "Foto pronta (%d KB). Escolha 'Anuncio de "
+                     "produto' e descreva o produto." % (len(dados) // 1024))
+        except Exception as e:
+            self._ui(setattr, self.opc_lb, "text", "Foto nao usada: %s" % str(e)[:70])
+
+    def _escolher_meu_video(self, *_):
+        if self.meu_video:                   # 2o toque remove
+            self.meu_video = None
+            self.meuv_chip.text = "USAR VIDEO MEU (Gemini, MiniMax, galeria)"
+            self.opc_lb.text = "Video removido: o app volta a gerar o video."
+            return
+        self._pegar_arquivo("video/*", "video")
+
+    def _definir_meu_video(self, caminho):
+        self.meu_video = caminho
+        self.meuv_chip.text = "VIDEO ESCOLHIDO (toque para remover)"
+        self.opc_lb.text = ("Seu video: %s. Descreva a ideia e toque em GERAR: o app escreve a "
+                            "legenda e voce posta." % os.path.basename(caminho))
+
+    def _tem_video(self):
+        return bool(self.video_url or self.meu_video)
+
     # --------------------------------------------------- salvar na galeria
     def _salvar_galeria(self, *_):
-        if not self.video_url:
+        if not self._tem_video():
             self._aviso("Nao ha video para salvar.")
             return
         if platform != "android" or SharedStorage is None:
-            webbrowser.open(self.video_url)
+            if self.video_url:
+                webbrowser.open(self.video_url)
             self._aviso("Abri o video no navegador: use 'baixar' de la.")
             return
         self._aviso("Baixando para a galeria...")
@@ -1090,7 +1208,8 @@ class TtokenApp(App):
 
         try:
             self._ui(self._progresso, 0, "Preparando (modo sem servidor)...")
-            produzir(ideia, plataforma, self.llm, self.videos, report)
+            produzir(ideia, plataforma, self.llm, self.videos, report,
+                     tipo=self.tipo, sem_video=bool(self.meu_video))
         except Exception as e:
             self._ui(self._erro, "Falha inesperada: %s" % e)
 
@@ -1231,7 +1350,7 @@ class TtokenApp(App):
         """Abre o app da rede (ja logado no celular) com o video; legenda na area
         de transferencia. O usuario so cola e toca em postar."""
         Clipboard.copy(self.texto)
-        if not self.video_url and (pacote in PRECISA_VIDEO):
+        if not self._tem_video() and (pacote in PRECISA_VIDEO):
             self._aviso("%s precisa do video e ele nao ficou pronto. Gere de novo." % nome)
             return
         if platform != "android" or ShareSheet is None:
@@ -1245,7 +1364,7 @@ class TtokenApp(App):
 
     def _preparar_envio(self, nome, pacote):
         try:
-            arq = self._baixar_video() if self.video_url else None
+            arq = self._baixar_video() if self._tem_video() else None
         except Exception as e:
             self._ui(self._aviso, "Nao consegui baixar o video (%s)." % str(e)[:60])
             return
@@ -1254,6 +1373,13 @@ class TtokenApp(App):
     def _baixar_video(self):
         """Baixa o mp4 e salva em Filmes (galeria) para poder compartilhar."""
         if self._shared:
+            return self._shared
+        if self.meu_video and not self.video_url:        # video que o usuario escolheu
+            env = autoclass("android.os.Environment")
+            self._shared = SharedStorage().copy_to_shared(
+                self.meu_video, collection=env.DIRECTORY_MOVIES)
+            if not self._shared:
+                raise RuntimeError("nao consegui preparar o video")
             return self._shared
         destino = os.path.join(getattr(self, "user_data_dir", None) or ".", "ttoken_video.mp4")
         r = requests.get(self.video_url, headers=self._dl, stream=True, timeout=120)
@@ -1328,9 +1454,17 @@ class TtokenApp(App):
         if self.video_url:
             card.add_widget(tlabel("VIDEO", 11, MUTED, bold=True))
             card.add_widget(tlabel("Gerado por %s" % s.get("api_video", "-"), 12, MUTED))
+        elif self.meu_video:
+            card.add_widget(tlabel("VIDEO", 11, MUTED, bold=True))
+            card.add_widget(tlabel("O seu arquivo: %s" % os.path.basename(self.meu_video), 12, MUTED))
+            bg = Chip("Salvar na galeria", height=46)
+            bg.bind(on_release=self._salvar_galeria)
+            card.add_widget(bg)
         else:
             card.add_widget(tlabel(s.get("aviso", "Video indisponivel agora."),
                                    13, alpha(MAGENTA, 1)))
+        if self.video_url and s.get("aviso"):
+            card.add_widget(tlabel(s["aviso"], 12, alpha(MAGENTA, 1)))
 
         b1 = NeonButton("COPIAR LEGENDA")
         b1.bind(on_release=lambda *_: self._copiar(b1, self.texto, "COPIAR LEGENDA"))
