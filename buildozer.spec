@@ -5,7 +5,7 @@ package.domain = com.ttoken
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
 source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests
-version = 1.7.0
+version = 1.8.0
 requirements = python3,kivy==2.3.0,requests,urllib3,idna,charset-normalizer,certifi,pyjnius,android,androidstorage4kivy
 orientation = portrait
 fullscreen = 0
@@ -16,6 +16,7 @@ android.ndk = 25b
 android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.enable_androidx = True
+android.manifest.intent_filters = intent_filters.xml
 p4a.branch = v2024.01.21
 
 [buildozer]

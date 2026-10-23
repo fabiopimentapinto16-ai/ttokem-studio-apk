@@ -358,8 +358,16 @@ class TtokenApp(App):
         self.meuv_chip = Chip("USAR VIDEO MEU (Gemini, MiniMax, galeria)", height=38)
         self.meuv_chip.bind(on_release=self._escolher_meu_video)
         opc.add_widget(self.meuv_chip)
-        self.opc_lb = tlabel("Video do Gemini/MiniMax/outro app? Escolha-o aqui: o Ttoken "
-                             "escreve a legenda e voce posta.", 12, MUTED)
+        atalhos = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+        for nome, url in (("Abrir Gemini", "https://gemini.google.com/app"),
+                          ("Abrir MiniMax", "https://hailuoai.video")):
+            c = Chip(nome, height=38)
+            c.bind(on_release=lambda w, u=url: webbrowser.open(u))
+            atalhos.add_widget(c)
+        opc.add_widget(atalhos)
+        self.opc_lb = tlabel("Gere o video no Gemini ou no MiniMax, toque em COMPARTILHAR e "
+                             "escolha 'Ttoken Studio': ele chega aqui pronto. (Ou escolha o "
+                             "arquivo no botao acima.) Depois: ideia, GERAR e postar.", 12, MUTED)
         opc.add_widget(self.opc_lb)
         self.p_video.add_widget(opc)
 
@@ -618,6 +626,7 @@ class TtokenApp(App):
 
     def on_start(self):
         self._fundo = False
+        self._ligar_compartilhar()
         self._retomar()
 
     def _arq_job(self):
@@ -999,6 +1008,58 @@ class TtokenApp(App):
         self.meuv_chip.text = "VIDEO ESCOLHIDO (toque para remover)"
         self.opc_lb.text = ("Seu video: %s. Descreva a ideia e toque em GERAR: o app escreve a "
                             "legenda e voce posta." % os.path.basename(caminho))
+
+    # ----------------------------- recebe "Compartilhar" de outros apps (Gemini etc.)
+    def _receber(self, mime, valor):
+        """valor = caminho local (video/imagem) ou texto compartilhado."""
+        mime = mime or ""
+        if mime.startswith("video/"):
+            self._definir_meu_video(valor)
+            self.opc_lb.text = "Video recebido: " + self.opc_lb.text
+        elif mime.startswith("image/"):
+            self._escolher_tipo(self.chips_tipo[1])          # foto = anuncio de produto
+            threading.Thread(target=self._preparar_foto, args=(valor,), daemon=True).start()
+        elif mime.startswith("text/"):
+            self.ideia.text = str(valor)[:2000]
+            self.opc_lb.text = "Texto recebido na ideia."
+        else:
+            self.opc_lb.text = "Tipo de arquivo nao suportado: %s" % mime
+            return
+        self._aba("video")
+
+    def _nova_intent(self, intent):
+        """Chamado pelo Android quando outro app compartilha algo com o Ttoken Studio."""
+        try:
+            if intent is None or intent.getAction() != "android.intent.action.SEND":
+                return
+            mime = intent.getType() or ""
+            if mime.startswith("text/"):
+                txt = intent.getStringExtra("android.intent.extra.TEXT") or ""
+                Clock.schedule_once(lambda dt: self._receber(mime, txt))
+                return
+            uri = intent.getParcelableExtra("android.intent.extra.STREAM")
+            if uri is not None:
+                threading.Thread(target=self._copiar_compartilhado,
+                                 args=(mime, str(uri.toString())), daemon=True).start()
+        except Exception:
+            pass
+
+    def _copiar_compartilhado(self, mime, uri):
+        try:
+            caminho = SharedStorage().copy_from_shared(uri)
+            self._ui(self._receber, mime, caminho)
+        except Exception as e:
+            self._ui(setattr, self.opc_lb, "text", "Nao consegui abrir o que foi compartilhado: %s" % str(e)[:60])
+
+    def _ligar_compartilhar(self):
+        if platform != "android" or autoclass is None or SharedStorage is None:
+            return
+        try:
+            from android import activity as _act
+            _act.bind(on_new_intent=self._nova_intent)
+            self._nova_intent(autoclass("org.kivy.android.PythonActivity").mActivity.getIntent())
+        except Exception:
+            pass
 
     def _tem_video(self):
         return bool(self.video_url or self.meu_video)
