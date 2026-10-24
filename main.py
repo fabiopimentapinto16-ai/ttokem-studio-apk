@@ -32,6 +32,7 @@ from kivy.utils import platform
 
 from maestro import Maestro          # motor embutido: funciona sem servidor
 from audio import SemTranscricao, transcrever
+import selftest
 import trending
 from pipeline import produzir
 from video import VideoMaestro
@@ -49,6 +50,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
+VERSAO_APP = "1.9.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -360,16 +362,20 @@ class TtokenApp(App):
         opc.add_widget(self.meuv_chip)
         atalhos = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
         for nome, url in (("Abrir Gemini", "https://gemini.google.com/app"),
-                          ("Abrir MiniMax", "https://hailuoai.video")):
+                          ("MiniMax H3 (gratis)", "https://hailuoai.video")):
             c = Chip(nome, height=38)
             c.bind(on_release=lambda w, u=url: webbrowser.open(u))
             atalhos.add_widget(c)
         opc.add_widget(atalhos)
+        syn = Chip("Syntx (cupom GAB15)", height=38)
+        syn.bind(on_release=lambda w: webbrowser.open("https://syntx.ai"))
+        opc.add_widget(syn)
         self.opc_lb = tlabel("Gere o video no Gemini ou no MiniMax, toque em COMPARTILHAR e "
                              "escolha 'Ttoken Studio': ele chega aqui pronto. (Ou escolha o "
                              "arquivo no botao acima.) Depois: ideia, GERAR e postar.", 12, MUTED)
         opc.add_widget(self.opc_lb)
         self.p_video.add_widget(opc)
+        self._montar_idioma()
 
         self.btn = NeonButton("GERAR VIDEO + LEGENDA")
         self.btn.bind(on_release=self.iniciar)
@@ -496,7 +502,8 @@ class TtokenApp(App):
                     r = s.post(API + "/api/gerar", timeout=30,
                                json={"ideia": ideia, "plataforma": plataforma,
                                      "tipo": self.tipo, "imagem_b64": self.foto_b64,
-                                     "sem_video": bool(self.meu_video)})
+                                     "sem_video": bool(self.meu_video),
+                                     "idioma": self.idioma})
                     if r.status_code == 429:
                         self._ui(self._erro, "Voce atingiu o limite de pedidos por hora. "
                                  "Tente de novo mais tarde.")
@@ -686,12 +693,65 @@ class TtokenApp(App):
         self.painel.add_widget({"video": self.p_video, "chat": self.p_chat,
                                 "code": self.p_code, "trend": self.p_trend}[chave])
 
+    # ------------------------------------------------ idioma (qualquer idioma)
+    IDIOMAS = (("Portugues", "Português do Brasil"), ("English", "English"),
+               ("Espanol", "Español"), ("Francais", "Français"),
+               ("Deutsch", "Deutsch"), ("Italiano", "Italiano"))
+
+    def _arq_cfg(self):
+        return os.path.join(getattr(self, "user_data_dir", None) or ".", "config.json")
+
+    def _montar_idioma(self):
+        try:
+            with open(self._arq_cfg(), encoding="utf-8") as f:
+                atual = json.load(f).get("idioma") or ""
+        except Exception:
+            atual = ""
+        g = Glass(border=alpha(CYAN, 0.45))
+        g.add_widget(tlabel("IDIOMA (legenda, roteiro e chat)", 11, CYAN, bold=True))
+        g.add_widget(tlabel("Escolha um ou escreva QUALQUER idioma no campo (ex.: Japones, "
+                            "Swahili, Arabe, Esperanto). A IA escreve nele.", 12, MUTED))
+        for ini in (0, 3):
+            lin = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
+            for nome, valor in self.IDIOMAS[ini:ini + 3]:
+                c = Chip(nome, height=38)
+                c.bind(on_release=lambda w, v=valor: self._definir_idioma(v))
+                lin.add_widget(c)
+            g.add_widget(lin)
+        self.idioma_ti = TextInput(text=atual or "Português do Brasil", multiline=False,
+                                   hint_text="Outro idioma...", size_hint_y=None,
+                                   height=dp(42), font_size=sp(14), background_normal="",
+                                   background_active="", background_color=(1, 1, 1, 0.07),
+                                   foreground_color=TEXT, hint_text_color=alpha(MUTED, 0.7),
+                                   cursor_color=CYAN, padding=[dp(10), dp(11)])
+        self.idioma_ti.bind(on_text_validate=lambda *_: self._definir_idioma(self.idioma_ti.text),
+                            focus=lambda w, f: None if f else self._definir_idioma(w.text))
+        g.add_widget(self.idioma_ti)
+        self.p_video.add_widget(g)
+
+    def _definir_idioma(self, valor):
+        valor = (valor or "").strip() or "Português do Brasil"
+        if self.idioma_ti.text != valor:
+            self.idioma_ti.text = valor
+        try:
+            with open(self._arq_cfg(), "w", encoding="utf-8") as f:
+                json.dump({"idioma": valor}, f)
+        except Exception:
+            pass
+
+    @property
+    def idioma(self):
+        try:
+            return (self.idioma_ti.text or "").strip() or "Português do Brasil"
+        except Exception:
+            return "Português do Brasil"
+
     def _perguntar(self, mensagem, historico, max_tokens=1500):
         """Chat/codigo: usa suas chaves no celular, senao o servidor (/api/chat)."""
         if self._tem_chaves():
             msgs = [{"role": "system", "content": "Voce e o assistente do Ttoken Studio: "
                      "roteiros, legendas, ideias de video e codigo (Python/Kivy). "
-                     "Responda em portugues, claro e pratico."}]
+                     "Responda em %s, claro e pratico." % self.idioma}]
             msgs += [h for h in historico[-10:]]
             msgs.append({"role": "user", "content": mensagem})
             return self.llm.chat(msgs, max_tokens=max_tokens)[0]
@@ -699,7 +759,8 @@ class TtokenApp(App):
         s.headers.update({"User-Agent": UA})
         if self._acordar(s) is not True:
             raise RuntimeError("servidor indisponivel (%s)" % (self._ultimo_erro or "sem resposta"))
-        r = s.post(API + "/api/chat", json={"mensagem": mensagem, "historico": historico[-10:]},
+        r = s.post(API + "/api/chat", json={"mensagem": mensagem, "historico": historico[-10:],
+                                    "idioma": self.idioma},
                    timeout=120)
         if r.status_code == 429:
             raise RuntimeError("limite de pedidos por hora atingido")
@@ -710,8 +771,9 @@ class TtokenApp(App):
         self.chat_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
         self.chat_lista.bind(minimum_height=self.chat_lista.setter("height"))
         self.p_chat.add_widget(self.chat_lista)
-        self._balao("Ola! Sou o Ttoken. Peca roteiro, legenda, ideia de video, codigo "
-                    "Python/Kivy ou so converse.", False)
+        self._balao("Ola! Sou o Ttoken. Aqui voce pode escrever, mandar AUDIO (botao MIC), "
+                    "anexar ARQUIVO e pedir CODIGO Python/Kivy, roteiro, legenda, ideia de "
+                    "video ou so conversar. Respondo no idioma escolhido na aba VIDEO.", False)
         card = Glass(border=alpha(VIOLET, 0.5))
         self.chat_inp = TextInput(hint_text="Digite sua mensagem...", multiline=True,
                                   size_hint_y=None, height=dp(72), font_size=sp(15),
@@ -904,26 +966,42 @@ class TtokenApp(App):
 
     def _mostrar_trend(self, itens):
         self.trend_lista.clear_widgets()
-        self.trend_msg.text = ("%d videos, do mais visto para o menos." % len(itens)
+        self.trend_msg.text = ("%d videos ordenados por engajamento (views + likes)." % len(itens)
                                if itens else "Nada encontrado para esse tema.")
         for n, it in enumerate(itens, 1):
             c = Glass(border=alpha(CYAN if n <= 3 else VIOLET, 0.4))
             c.add_widget(tlabel("[b]%d. %s[/b]" % (n, it["titulo"]), 14))
-            c.add_widget(tlabel("%s  |  %s views" % (it["canal"], self._fmt_views(it["views"])),
-                                12, MUTED))
+            c.add_widget(tlabel("%s  |  %s views  |  %s likes" % (
+                it["canal"], self._fmt_views(it["views"]), self._fmt_views(it.get("likes", 0))),
+                12, MUTED))
             linha = BoxLayout(size_hint_y=None, height=dp(38), spacing=dp(8))
-            usar = Chip("Usar como ideia", height=38)
+            usar = Chip("Usar ideia", height=38)
             usar.bind(on_release=lambda w, t=it["titulo"]: self._usar_ideia(t))
+            avatar = Chip("Com meu avatar", height=38)
+            avatar.bind(on_release=lambda w, t=it["titulo"]: self._usar_com_avatar(t))
             ver = Chip("Abrir", height=38)
             ver.bind(on_release=lambda w, u=it["url"]: webbrowser.open(u))
             linha.add_widget(usar)
+            linha.add_widget(avatar)
             linha.add_widget(ver)
             c.add_widget(linha)
             self.trend_lista.add_widget(c)
 
     def _usar_ideia(self, titulo):
-        self.ideia.text = "Video original inspirado no tema: " + titulo
+        self.ideia.text = (
+            "Aja como agência de conteúdo viral. Crie um vídeo ORIGINAL de 15s inspirado no "
+            "tema: " + titulo + ". Entregue: gancho forte nos 3 primeiros segundos, "
+            "desenvolvimento e CTA. Estilo dinâmico, legenda pronta e hashtags.")
         self._aba("video")
+
+    def _usar_com_avatar(self, titulo):
+        self.ideia.text = (
+            "Vídeo ORIGINAL de 15s com MEU AVATAR/rosto, inspirado no tema: " + titulo +
+            ". A foto que eu anexar é a referência do personagem. Mantenha a identidade visual.")
+        self._escolher_tipo(self.chips_tipo[1])          # anuncio
+        self._aba("video")
+        self.opc_lb.text = ("Agora toque em FOTO DO PRODUTO (ou do seu rosto/avatar) e depois "
+                            "em GERAR.")
 
     # ------------------------------- tipo, foto do produto e video do usuario
     def _escolher_tipo(self, chip):
@@ -1270,7 +1348,8 @@ class TtokenApp(App):
         try:
             self._ui(self._progresso, 0, "Preparando (modo sem servidor)...")
             produzir(ideia, plataforma, self.llm, self.videos, report,
-                     tipo=self.tipo, sem_video=bool(self.meu_video))
+                     tipo=self.tipo, sem_video=bool(self.meu_video),
+                     idioma=self.idioma)
         except Exception as e:
             self._ui(self._erro, "Falha inesperada: %s" % e)
 
@@ -1337,6 +1416,12 @@ class TtokenApp(App):
         srv = Chip("TESTAR O SERVIDOR", height=40)
         srv.bind(on_release=self._testar_servidor)
         card.add_widget(srv)
+        tudo = NeonButton("TESTAR TUDO", c1=MAGENTA, c2=VIOLET, height=dp(48))
+        tudo.bind(on_release=self._testar_tudo)
+        card.add_widget(tudo)
+        cop = Chip("COPIAR RELATORIO", height=40)
+        cop.bind(on_release=self._copiar_relatorio)
+        card.add_widget(cop)
         self.teste_lb = tlabel("", 12, MUTED)
         card.add_widget(self.teste_lb)
         self.chaves_slot.add_widget(card)
@@ -1396,6 +1481,55 @@ class TtokenApp(App):
             except Exception as e:
                 self._ui(setattr, self.teste_lb, "text", "Falha no teste: %s" % str(e)[:140])
         threading.Thread(target=trabalho, daemon=True).start()
+
+    def _testar_tudo(self, *_):
+        """Roda o autoteste completo (selftest.py) e mostra OK/ERRO/AVISO com a acao."""
+        if getattr(self, "_testando", False):
+            return
+        self._gravar_campos()
+        self._testando = True
+        self._relatorio = ""
+        self.teste_lb.text = ("Testando TUDO (pode levar 2-4 min; o servidor pode estar "
+                              "dormindo). Nao feche o app...")
+        feitos = []
+
+        def log(nome, status, detalhe, acao):
+            feitos.append(nome)
+            self._ui(setattr, self.teste_lb, "text",
+                     "Testando... %d feitos. Agora: %s -> %s" % (len(feitos), nome, status))
+
+        def trabalho():
+            try:
+                ctx = {"api": API, "ua": UA, "acordar": self._acordar,
+                       "ultimo_erro": lambda: self._ultimo_erro, "llm": self.llm,
+                       "videos": self.videos, "tem_chaves": self._tem_chaves(),
+                       "chaves": self.chaves, "autoclass": autoclass,
+                       "android": platform == "android",
+                       "user_dir": getattr(self, "user_data_dir", None) or ".",
+                       "notificar_teste": self._notificar_teste}
+                res = selftest.rodar(ctx, log)
+                self._relatorio = selftest.relatorio(res, VERSAO_APP)
+            except Exception as e:
+                self._relatorio = "Autoteste falhou: %s" % e
+            self._testando = False
+            self._ui(setattr, self.teste_lb, "text", self._relatorio)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _notificar_teste(self):
+        antes = getattr(self, "_fundo", False)
+        self._fundo = True              # a notificacao so sai com o app em segundo plano
+        try:
+            self._notificar("Ttoken Studio", "Teste de notificacao: tudo certo.")
+        finally:
+            self._fundo = antes
+
+    def _copiar_relatorio(self, *_):
+        txt = getattr(self, "_relatorio", "") or self.teste_lb.text
+        try:
+            Clipboard.copy(txt)
+            self.teste_lb.text = "Relatorio copiado: cole na conversa com o Claude.\n\n" + txt
+        except Exception:
+            pass
 
     def _salvar_chaves(self, *_):
         self._gravar_campos()
