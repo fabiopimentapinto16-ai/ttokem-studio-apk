@@ -50,7 +50,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.9.1"
+VERSAO_APP = "1.10.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -354,6 +354,10 @@ class TtokenApp(App):
         opc.add_widget(tlabel("Anuncio: a IA escreve um comercial (gancho, produto em destaque, "
                               "chamada para comprar). Com FOTO DO PRODUTO o video anima a sua foto.",
                               12, MUTED))
+        self.economia = "auto"
+        self.eco_chip = Chip("ECONOMIA DE TOKENS: SEGURA (toque p/ agressiva)", height=38)
+        self.eco_chip.bind(on_release=self._alternar_economia)
+        opc.add_widget(self.eco_chip)
         self.foto_chip = Chip("FOTO DO PRODUTO (opcional)", height=38)
         self.foto_chip.bind(on_release=self._escolher_foto)
         opc.add_widget(self.foto_chip)
@@ -503,7 +507,8 @@ class TtokenApp(App):
                                json={"ideia": ideia, "plataforma": plataforma,
                                      "tipo": self.tipo, "imagem_b64": self.foto_b64,
                                      "sem_video": bool(self.meu_video),
-                                     "idioma": self.idioma})
+                                     "idioma": self.idioma,
+                                     "economia": self.economia})
                     if r.status_code == 429:
                         self._ui(self._erro, "Voce atingiu o limite de pedidos por hora. "
                                  "Tente de novo mais tarde.")
@@ -1004,6 +1009,15 @@ class TtokenApp(App):
                             "em GERAR.")
 
     # ------------------------------- tipo, foto do produto e video do usuario
+    def _alternar_economia(self, *_):
+        self.economia = "agressivo" if self.economia == "auto" else "auto"
+        self.eco_chip.text = ("ECONOMIA DE TOKENS: AGRESSIVA (toque p/ segura)"
+                              if self.economia == "agressivo"
+                              else "ECONOMIA DE TOKENS: SEGURA (toque p/ agressiva)")
+        self.opc_lb.text = ("Agressiva: texto telegrafico (~25% menos tokens); restricoes, "
+                            "numeros e nomes sao sempre mantidos." if self.economia == "agressivo"
+                            else "Segura: so corta o que e redundante (~7% menos tokens).")
+
     def _escolher_tipo(self, chip):
         self.tipo = chip.valor
         for c in self.chips_tipo:
@@ -1349,7 +1363,7 @@ class TtokenApp(App):
             self._ui(self._progresso, 0, "Preparando (modo sem servidor)...")
             produzir(ideia, plataforma, self.llm, self.videos, report,
                      tipo=self.tipo, sem_video=bool(self.meu_video),
-                     idioma=self.idioma)
+                     idioma=self.idioma, modo_ttokem=self.economia)
         except Exception as e:
             self._ui(self._erro, "Falha inesperada: %s" % e)
 
