@@ -374,6 +374,9 @@ class TtokenApp(App):
         syn = Chip("Syntx (cupom GAB15)", height=38)
         syn.bind(on_release=lambda w: webbrowser.open("https://syntx.ai"))
         opc.add_widget(syn)
+        pn = Chip("Painel TTOKEM OS (navegador)", height=38)
+        pn.bind(on_release=lambda w: webbrowser.open(API.rstrip("/") + "/painel"))
+        opc.add_widget(pn)
         self.opc_lb = tlabel("Gere o video no Gemini ou no MiniMax, toque em COMPARTILHAR e "
                              "escolha 'Ttoken Studio': ele chega aqui pronto. (Ou escolha o "
                              "arquivo no botao acima.) Depois: ideia, GERAR e postar.", 12, MUTED)
