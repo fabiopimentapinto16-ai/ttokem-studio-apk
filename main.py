@@ -63,6 +63,7 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("openrouter", "OPENROUTER (texto, varios modelos)", "OPENROUTER_API_KEY"),
           ("gemini", "GEMINI (texto)", "GEMINI_API_KEY"),
           ("hf", "HUGGING FACE (texto)", "HF_TOKEN"),
+          ("reflection", "REFLECTION / BEAM (texto, gratis p/ comecar)", "REFLECTION_API_KEY"),
           ("magichour", "MAGIC HOUR (video)", "MAGIC_HOUR_API_KEY"),
           ("fal", "FAL.AI (video)", "FAL_KEY"),
           ("youtube", "YOUTUBE (ver os mais assistidos)", "YOUTUBE_API_KEY"),
@@ -73,11 +74,12 @@ LINKS = {"groq": "https://console.groq.com/keys",
          "openrouter": "https://openrouter.ai/keys",
          "gemini": "https://aistudio.google.com/apikey",
          "hf": "https://huggingface.co/settings/tokens",
+         "reflection": "https://platform.reflection.ai",
          "magichour": "https://magichour.ai/developer",
          "fal": "https://fal.ai/dashboard/keys",
          "youtube": "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
          "pexels": "https://www.pexels.com/api/"}
-TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf")
+TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf", "reflection")
 
 # redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
 SOCIAIS = [("Instagram", "com.instagram.android"),
@@ -374,8 +376,8 @@ class TtokenApp(App):
         syn = Chip("Syntx (cupom GAB15)", height=38)
         syn.bind(on_release=lambda w: webbrowser.open("https://syntx.ai"))
         opc.add_widget(syn)
-        pn = Chip("Painel TTOKEM OS (navegador)", height=38)
-        pn.bind(on_release=lambda w: webbrowser.open(API.rstrip("/") + "/painel"))
+        pn = Chip("Sistema TTOKEM OS (site e painel)", height=38)
+        pn.bind(on_release=lambda w: webbrowser.open(API.rstrip("/") + "/sistema"))
         opc.add_widget(pn)
         self.opc_lb = tlabel("Gere o video no Gemini ou no MiniMax, toque em COMPARTILHAR e "
                              "escolha 'Ttoken Studio': ele chega aqui pronto. (Ou escolha o "
