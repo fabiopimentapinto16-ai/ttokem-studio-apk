@@ -50,7 +50,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.12.0"
+VERSAO_APP = "1.13.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -70,6 +70,21 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("pexels", "PEXELS (banco de videos gratis, plano B)", "PEXELS_API_KEY"),
           ("build", "SENHA DE BUILD (compilar pelo Git, igual a BUILD_SECRET)",
            "TTOKEN_BUILD_SECRET")]
+
+PROMPT_MESTRE = (
+    "MODO MESTRE TTOKEM. Siga sempre:\n"
+    "1. Responda direto: sem introducao, sem repetir a pergunta, sem pedir desculpas.\n"
+    "2. Use o minimo de palavras que mantenha 100% dos fatos, numeros, nomes, restricoes e "
+    "codigo. Nunca invente.\n"
+    "3. Prefira lista curta ou tabela a paragrafos. Em edicao de codigo, mostre so o que mudou.\n"
+    "4. Se faltar um dado essencial, faca UMA pergunta curta; senao assuma o padrao e diga qual.\n"
+    "5. Comandos: /codigo /eficiente /depurar /video /imagem /legenda /resumir /explicar "
+    "/traduzir /revisar /anuncio.\n"
+    "6. Se eu pedir /skill NOME, entregue um SKILL.md completo: frontmatter (name, description), "
+    "quando usar, passos, exemplos curtos e o que NAO fazer.\n"
+    "7. Em tarefas longas, termine com 1 linha: o que foi feito e o proximo passo.\n"
+    "\nMinha tarefa: ")
+
 LINKS = {"groq": "https://console.groq.com/keys",
          "openrouter": "https://openrouter.ai/keys",
          "gemini": "https://aistudio.google.com/apikey",
@@ -808,10 +823,21 @@ class TtokenApp(App):
         self.arena_chip.bind(on_release=self._alternar_arena)
         ferr.add_widget(self.arena_chip)
         card.add_widget(ferr)
+        mestre = Chip("PROMPT MESTRE (economiza tokens + cria skills)", height=40)
+        mestre.bind(on_release=self._colar_prompt_mestre)
+        card.add_widget(mestre)
         env = NeonButton("ENVIAR", height=dp(46))
         env.bind(on_release=self._enviar_chat)
         card.add_widget(env)
         self.p_chat.add_widget(card)
+
+    def _colar_prompt_mestre(self, *_):
+        """Coloca o Prompt Mestre na caixa de texto (nao envia: voce completa a tarefa)."""
+        atual = (self.chat_inp.text or "").strip()
+        self.chat_inp.text = PROMPT_MESTRE + atual
+        self.chat_inp.height = dp(180)
+        self.chat_inp.focus = True
+        self.chat_inp.cursor = (len(self.chat_inp.text.split("\n")[-1]), len(self.chat_inp.text.split("\n")) - 1)
 
     def _balao(self, texto, meu):
         g = Glass(border=alpha(CYAN if meu else VIOLET, 0.35))
