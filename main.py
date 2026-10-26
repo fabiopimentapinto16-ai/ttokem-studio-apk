@@ -764,13 +764,15 @@ class TtokenApp(App):
                      "Responda em %s, claro e pratico." % self.idioma}]
             msgs += [h for h in historico[-10:]]
             msgs.append({"role": "user", "content": mensagem})
+            if getattr(self, "arena", 0) >= 2:
+                return self.llm.arena(msgs, n=self.arena, max_tokens=max_tokens)[0]
             return self.llm.chat(msgs, max_tokens=max_tokens)[0]
         s = requests.Session()
         s.headers.update({"User-Agent": UA})
         if self._acordar(s) is not True:
             raise RuntimeError("servidor indisponivel (%s)" % (self._ultimo_erro or "sem resposta"))
         r = s.post(API + "/api/chat", json={"mensagem": mensagem, "historico": historico[-10:],
-                                    "idioma": self.idioma},
+                                    "idioma": self.idioma, "arena": getattr(self, "arena", 0)},
                    timeout=120)
         if r.status_code == 429:
             raise RuntimeError("limite de pedidos por hora atingido")
@@ -801,6 +803,10 @@ class TtokenApp(App):
         arq.bind(on_release=self._escolher_arquivo)
         ferr.add_widget(self.mic)
         ferr.add_widget(arq)
+        self.arena = 0                         # 0 = normal; 3 = "Melhor de 3" (gasta 3x a cota)
+        self.arena_chip = Chip("MELHOR DE 3: DESLIGADO", height=40)
+        self.arena_chip.bind(on_release=self._alternar_arena)
+        ferr.add_widget(self.arena_chip)
         card.add_widget(ferr)
         env = NeonButton("ENVIAR", height=dp(46))
         env.bind(on_release=self._enviar_chat)
@@ -1014,6 +1020,11 @@ class TtokenApp(App):
                             "em GERAR.")
 
     # ------------------------------- tipo, foto do produto e video do usuario
+    def _alternar_arena(self, *_):
+        self.arena = 0 if self.arena else 3
+        self.arena_chip.text = ("MELHOR DE 3: LIGADO (gasta 3x a cota)" if self.arena
+                                else "MELHOR DE 3: DESLIGADO")
+
     def _alternar_economia(self, *_):
         self.economia = "agressivo" if self.economia == "auto" else "auto"
         self.eco_chip.text = ("ECONOMIA DE TOKENS: AGRESSIVA (toque p/ segura)"
