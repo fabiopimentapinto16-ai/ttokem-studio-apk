@@ -189,9 +189,15 @@ def rodar(ctx, log):
         def t_colab():
             h = _json(s.get(api + "/health", timeout=20))
             tem = any((v.get("tipo") or v.get("id")) == "colab" for v in (h.get("videos") or []))
+            cfg = h.get("config") or {}
+            if not tem and cfg.get("COLAB_SECRET") is False:
+                reg("Colab (GPU de video)", "AVISO", "COLAB_SECRET nao existe no SnapDeploy",
+                    "Crie a variavel COLAB_SECRET (uma senha sua) e use a MESMA no notebook do Colab.")
+                return
             reg("Colab (GPU de video)", "OK" if tem else "AVISO",
                 "conectado" if tem else "nenhum notebook conectado agora",
-                "" if tem else "Rode o notebook do Colab e confira o COLAB_SECRET.")
+                "" if tem else "COLAB_SECRET existe no servidor: rode o notebook do Colab "
+                               "com a mesma senha.")
         seguro("Colab (GPU de video)", t_colab)
     else:
         for nome in ("Chat de IA", "Legenda (gerar de ponta a ponta)", "Mais assistidos (aba TOP)",
