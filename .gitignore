@@ -4,3 +4,6 @@ sample_data/
 bin/
 __pycache__/
 *.log
+# capturas de tela do celular: não pertencem ao código (e entrariam no APK)
+Screenshot_*.jpg
+Screenshot_*.png
