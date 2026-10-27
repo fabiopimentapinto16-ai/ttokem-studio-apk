@@ -5,6 +5,7 @@ e video prontos. O app NUNCA posta sozinho: o usuario da o ultimo toque.
 """
 import base64
 import json
+import math
 import os
 import re
 import threading
@@ -50,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.13.0"
+VERSAO_APP = "1.14.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -90,7 +91,7 @@ LINKS = {"groq": "https://console.groq.com/keys",
          "gemini": "https://aistudio.google.com/apikey",
          "hf": "https://huggingface.co/settings/tokens",
          "reflection": "https://platform.reflection.ai",
-         "magichour": "https://magichour.ai/developer",
+         "magichour": "https://magichour.ai/sign-up?invite=cmvi7zfwj0053ii01kaxzyw6t",   # link de indicacao do dono do app
          "fal": "https://fal.ai/dashboard/keys",
          "youtube": "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
          "pexels": "https://www.pexels.com/api/"}
@@ -256,6 +257,88 @@ class Chip(ButtonBehavior, Label):
             self._lc.rgba, self.color = (1, 1, 1, 0.14), TEXT
 
 
+# metais da arvore de engrenagens (so decoracao do fundo)
+BRONZE = (0.80, 0.50, 0.20, 1)
+COBRE = (0.72, 0.45, 0.20, 1)
+OURO = (1.00, 0.78, 0.17, 1)
+PRATA = (0.75, 0.75, 0.78, 1)
+
+
+class OficinaIA(Widget):
+    """Arvore de engrenagens ao fundo: gira devagar e acelera enquanto o video e gerado.
+    So desenho (nao recebe toques); para sozinha quando o app vai para segundo plano."""
+    NOS = ((0.50, 0.30, 0.20, BRONZE), (0.26, 0.52, 0.14, COBRE), (0.74, 0.52, 0.14, OURO),
+           (0.12, 0.76, 0.09, PRATA), (0.38, 0.80, 0.10, PRATA),
+           (0.62, 0.80, 0.10, PRATA), (0.88, 0.76, 0.09, PRATA))
+    GALHOS = ((0, 1), (0, 2), (1, 3), (1, 4), (2, 5), (2, 6))
+    gerando = False
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._ang = [0.6 * i for i in range(len(self.NOS))]
+        self._a = 0.20                       # opacidade atual (sobe quando gera)
+        self._rpm = 800.0
+        self._on = False
+        self._cores, self._gears, self._fios = [], [], []
+        with self.canvas:
+            for _ in self.GALHOS:
+                self._fios.append((Color(*COBRE[:3], 0.25), Line(points=[0, 0, 0, 0], width=1.6)))
+            for no in self.NOS:
+                c = Color(*no[3][:3], 0.2)
+                self._gears.append((c, Line(points=[0, 0], width=1.4, close=True)))
+        self.rpm_lb = Label(text="800 RPM", font_size=sp(9), color=alpha(MUTED, 0.7),
+                            size_hint=(None, None), size=(dp(90), dp(16)))
+        self.add_widget(self.rpm_lb)
+        self.bind(pos=self._ajusta, size=self._ajusta)     # ajusta quando o layout dá o tamanho
+
+    def _ajusta(self, *_):
+        self.rpm_lb.pos = (self.right - dp(100), self.top - dp(26))
+        w, h = self.size
+        for (cor, ln), (a, b) in zip(self._fios, self.GALHOS):
+            na, nb = self.NOS[a], self.NOS[b]
+            ln.points = [self.x + na[0] * w, self.y + na[1] * h,
+                         self.x + nb[0] * w, self.y + nb[1] * h]
+        self._desenha()
+
+    def ligar(self, on):
+        if on and not self._on:
+            Clock.schedule_interval(self._tick, 1 / 20.0)
+        elif not on and self._on:
+            Clock.unschedule(self._tick)
+        self._on = on
+
+    def _desenha(self):
+        w, h = self.size
+        base = min(w, h) or 1
+        for i, (no, (cor, ln)) in enumerate(zip(self.NOS, self._gears)):
+            cx, cy, r = self.x + no[0] * w, self.y + no[1] * h, no[2] * base
+            dentes = 12 if r > base * 0.12 else 9
+            dente, pts = r * 0.16, []
+            for k in range(dentes):
+                a0 = self._ang[i] + k * 2 * math.pi / dentes
+                passo = 2 * math.pi / dentes
+                for da, rr in ((0.0, r), (0.2, r + dente), (0.55, r + dente), (0.75, r)):
+                    a = a0 + da * passo
+                    pts += [cx + math.cos(a) * rr, cy + math.sin(a) * rr]
+            ln.points = pts
+
+    def _tick(self, dt):
+        alvo_a, vel = (0.55, 0.12) if self.gerando else (0.20, 0.012)
+        self._a += (alvo_a - self._a) * 0.1
+        self._rpm += ((8000 if self.gerando else 800) - self._rpm) * 0.08
+        for i in range(len(self._ang)):
+            self._ang[i] += vel * (1 if i % 2 == 0 else -1)
+        for (c, _), no in zip(self._gears, self.NOS):
+            c.a = self._a
+        for c, _ in self._fios:
+            c.a = self._a * 0.8
+        self._desenha()
+        txt = "%d RPM" % (int(self._rpm) // 50 * 50)
+        if txt != self.rpm_lb.text:
+            self.rpm_lb.text = txt
+
+
+
 class NeonBar(Widget):
     """Barra de progresso com degrade; `frac` vai de 0 a 1."""
     frac = NumericProperty(0)
@@ -296,6 +379,8 @@ class TtokenApp(App):
 
         root = FloatLayout()
         root.add_widget(Backdrop(size_hint=(1, 1)))
+        self.oficina = OficinaIA(size_hint=(1, 1))      # engrenagens ao fundo (so decoracao)
+        root.add_widget(self.oficina)
         scroll = ScrollView(do_scroll_x=False, bar_width=0, size_hint=(1, 1))
         col = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(16),
                         padding=[dp(18), dp(30), dp(18), dp(30)])
@@ -443,6 +528,7 @@ class TtokenApp(App):
             return
         self.btn.disabled = True
         self.btn.text = "PROCESSANDO..."
+        self._motor(True)
         if pedir_permissao:
             try:
                 pedir_permissao(["android.permission.POST_NOTIFICATIONS"])
@@ -648,16 +734,27 @@ class TtokenApp(App):
         except Exception:
             pass
 
+    def _motor(self, gerando):
+        of = getattr(self, "oficina", None)
+        if of is not None:
+            of.gerando = gerando
+
     def on_pause(self):
         self._fundo = True
+        if getattr(self, "oficina", None) is not None:
+            self.oficina.ligar(False)
         return True
 
     def on_resume(self):
         self._fundo = False
+        if getattr(self, "oficina", None) is not None:
+            self.oficina.ligar(True)
         self._retomar()
 
     def on_start(self):
         self._fundo = False
+        if getattr(self, "oficina", None) is not None:
+            self.oficina.ligar(True)
         self._ligar_compartilhar()
         self._retomar()
 
@@ -692,6 +789,7 @@ class TtokenApp(App):
         self._montar_progresso()
         self.btn.disabled = True
         self.btn.text = "PROCESSANDO..."
+        self._motor(True)
         self._t0 = d["t0"]
         self._eta = ""
         threading.Thread(target=self._acompanhar_novo, args=(d["job"],), daemon=True).start()
@@ -1670,6 +1768,7 @@ class TtokenApp(App):
         Clock.unschedule(self._tique)
         self.btn.disabled = False
         self.btn.text = "GERAR VIDEO + LEGENDA"
+        self._motor(False)
 
     def _erro(self, msg):
         self._notificar("Ttoken Studio", "Nao deu certo: " + str(msg)[:80])
