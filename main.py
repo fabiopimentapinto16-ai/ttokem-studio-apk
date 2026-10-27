@@ -18,7 +18,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Line, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Ellipse, Line, Mesh, Rectangle, RoundedRectangle
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, NumericProperty
@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.14.1"
+VERSAO_APP = "1.14.2"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -267,8 +267,12 @@ PRATA = (0.75, 0.75, 0.78, 1)
 # --- geometria das engrenagens (modulo 1: raio primitivo = dentes / 2) ---------------
 ADD, DED = 0.9, 1.1          # altura do dente acima / abaixo do raio primitivo
 # (dentes, cor, pai, angulo em graus a partir do pai): raiz -> 2 galhos -> 4 folhas
-ARVORE = ((26, BRONZE, None, 0), (18, COBRE, 0, 120), (18, OURO, 0, 60),
-          (12, PRATA, 1, 165), (12, PRATA, 1, 95), (12, PRATA, 2, 15), (12, PRATA, 2, 85))
+ARVORE = ((26, OURO, None, 0), (18, PRATA, 0, 120), (18, PRATA, 0, 60),
+          (12, OURO, 1, 165), (12, OURO, 1, 95), (12, OURO, 2, 15), (12, OURO, 2, 85))
+# caminho do impulso (indices das engrenagens): sai da raiz, passa por todas e volta;
+# o ultimo ponto e a SAIDA (abaixo da raiz). Depois recomeca.
+ROTA = (0, 1, 3, 1, 4, 1, 0, 2, 5, 2, 6, 2, 0, "S")
+NEON = (0.0, 1.0, 0.62)
 
 
 def arvore_centros():
@@ -300,39 +304,105 @@ def fase_filha(ang_pai, n_pai, n_filha, phi):
     return phi + math.pi + (math.pi - n_pai * (ang_pai - phi)) / n_filha
 
 
+def rota_pontos():
+    """Pontos (em modulos) do circuito: centros das engrenagens + saida abaixo da raiz."""
+    pos = arvore_centros()
+    saida = (pos[0][0], pos[0][1] - ARVORE[0][0] / 2.0 - 7.0)
+    return [saida if r == "S" else pos[r] for r in ROTA]
+
+
+def tom(cor, f, mistura=0.0):
+    """Escurece (f<1) ou clareia (mistura>0 puxa para o branco) uma cor RGB."""
+    return tuple(min(1.0, c * f + (1 - c * f) * mistura) for c in cor[:3])
+
+
 class OficinaIA(Widget):
-    """Engrenagens ao fundo: encaixadas dente a dente como um relogio (a filha gira ao
-    contrario e na razao dos dentes), com volume em 3 camadas. Aceleram enquanto gera.
-    So desenho (nao recebe toques); para sozinha quando o app vai para segundo plano."""
+    """Engrenagens 3D maciças (prata e ouro) encaixadas como um relogio, ao fundo do app.
+    Um circuito de cobre liga todas e um impulso neon percorre a arvore inteira e volta
+    pela saida. Gira devagar; acelera enquanto gera. So desenho: nao recebe toques e para
+    sozinho quando o app vai para segundo plano."""
     gerando = False
+    CAMADAS = 5                                    # fatias que dao a espessura do metal
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self._pos = arvore_centros()
         self._gab = [engrenagem_gabarito(a[0]) for a in ARVORE]
+        self._rota = rota_pontos()
+        self._cum = [0.0]
+        for a, b in zip(self._rota, self._rota[1:]):
+            self._cum.append(self._cum[-1] + math.dist(a, b))
         xs = [p[0] for p in self._pos]
-        ys = [p[1] for p in self._pos]
+        ys = [p[1] for p in self._pos] + [self._rota[-1][1]]
         self._cx, self._cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
         self._ext = (max(xs) - min(xs) + 14, max(ys) - min(ys) + 14)
-        self._raiz = 0.0                     # angulo da engrenagem motora
-        self._a, self._rpm, self._on = 0.22, 800.0, False
-        self._cam = []                       # por engrenagem: 3 camadas + cubo
+        self._raiz, self._s = 0.0, 0.0
+        self._a, self._rpm, self._on = 0.55, 800.0, False
+        self._eng = []
         with self.canvas:
-            for n, cor, _p, _a in ARVORE:
-                camadas = []
-                for k in (2, 1, 0):          # fundo -> frente
-                    c = Color(*cor[:3], 0.2)
-                    camadas.append((k, c, Line(points=[0, 0], width=1.3 if k == 0 else 1.0,
-                                               close=True)))
-                cc = Color(*cor[:3], 0.2)
-                self._cam.append((camadas, cc, Line(points=[0, 0], width=1.2)))
+            for n, cor, _p, _g in ARVORE:
+                fatias = []
+                for k in range(self.CAMADAS - 1, -1, -1):          # fundo -> frente
+                    c = Color(*tom(cor, 0.30 + 0.14 * (self.CAMADAS - 1 - k)), 1)
+                    m = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                    fatias.append((k, c, m))
+                cb = Color(*tom(cor, 1.0, 0.18), 1)
+                bisel = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                ch = Color(*tom(cor, 0.30), 1)
+                cubo = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                cr = Color(*tom(cor, 0.22), 1)
+                raios = Line(points=[0, 0, 0, 0], width=2.2)
+                cp = Color(*tom(cor, 1.1, 0.3), 1)
+                pino = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                self._eng.append((fatias, cb, bisel, ch, cubo, cr, raios, cp, pino))
+            self._fio_c = Color(*COBRE[:3], 0.5)
+            self._fio = Line(points=[0, 0, 0, 0], width=1.6)
+            self._saida_c = Color(*NEON, 0.7)
+            self._saida = Line(points=[0, 0, 0, 0], width=1.6)
+            self._brilho = []
+            for larg, a in ((9, 0.14), (5, 0.30), (2, 0.95)):          # halo -> nucleo
+                self._brilho.append((Color(*NEON, a), Line(points=[0, 0, 0, 0], width=larg)))
         self.rpm_lb = Label(text="800 RPM", font_size=sp(9), color=alpha(MUTED, 0.7),
                             size_hint=(None, None), size=(dp(90), dp(16)))
         self.add_widget(self.rpm_lb)
         self.bind(pos=self._ajusta, size=self._ajusta)     # ajusta quando o layout da o tamanho
 
+    # ----- geometria de tela
+    def _tela(self):
+        w, h = self.size
+        esc = min(w * 0.94 / self._ext[0], h * 0.72 / (self._ext[1] / 0.85))
+        return esc, self.x + w / 2, self.y + h * 0.46
+
+    def _xy(self, p, esc, ox, oy):
+        return (ox + (p[0] - self._cx) * esc, oy + (p[1] - self._cy) * esc * 0.85)
+
+    @staticmethod
+    def _fan(cx, cy, pts):
+        v = [cx, cy, 0, 0]
+        for x, y in pts + pts[:1]:
+            v += [x, y, 0, 0]
+        return v, list(range(len(v) // 4))
+
     def _ajusta(self, *_):
         self.rpm_lb.pos = (self.right - dp(100), self.top - dp(26))
+        esc, ox, oy = self._tela()
+        # partes que nao giram (aneis do cubo, pino, circuito, saida): so ao mudar o tamanho
+        for i, (n, *_r) in enumerate(ARVORE):
+            fatias, cb, bisel, ch, cubo, cr, raios, cp, pino = self._eng[i]
+            px, py = self._xy(self._pos[i], esc, ox, oy)
+            for mesh, frac in ((bisel, 0.80), (cubo, 0.40), (pino, 0.12)):
+                r = n / 2.0 * frac * esc
+                circ = [(px + math.cos(a) * r, py + math.sin(a) * r * 0.85)
+                        for a in (j * 2 * math.pi / 24 for j in range(24))]
+                mesh.vertices, mesh.indices = self._fan(px, py, circ)
+        pts = []
+        for p in self._rota:
+            pts += list(self._xy(p, esc, ox, oy))
+        self._fio.points = pts
+        sx, sy = self._xy(self._rota[-1], esc, ox, oy)
+        r = 0.9 * esc
+        self._saida.points = [v for j in range(25) for v in
+                              (sx + math.cos(j * math.pi / 12) * r, sy + math.sin(j * math.pi / 12) * r * 0.85)]
         self._desenha()
 
     def ligar(self, on):
@@ -354,40 +424,59 @@ class OficinaIA(Widget):
             ang[i] = fase_filha(ang[pai], ARVORE[pai][0], n, phi)
         return ang
 
+    def ponto_na_rota(self, s):
+        """Ponto (modulos) a distancia s do inicio do circuito."""
+        s = max(0.0, min(s, self._cum[-1]))
+        for i in range(1, len(self._cum)):
+            if s <= self._cum[i]:
+                seg = self._cum[i] - self._cum[i - 1] or 1.0
+                t = (s - self._cum[i - 1]) / seg
+                a, b = self._rota[i - 1], self._rota[i]
+                return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+        return self._rota[-1]
+
     def _desenha(self):
-        w, h = self.size
-        esc = min(w * 0.94 / self._ext[0], h * 0.72 / (self._ext[1] / 0.85))
-        ox, oy = self.x + w / 2, self.y + h * 0.46
-        profund = max(2.0, esc * 0.45)          # espessura aparente (px)
+        esc, ox, oy = self._tela()
+        profund = max(1.5, esc * 0.18)          # espessura de cada fatia (px)
         ang = self.angulos()
-        for i, ((n, _cor, _p, _g), (camadas, _cc, cubo)) in enumerate(zip(ARVORE, self._cam)):
+        for i, (n, *_r) in enumerate(ARVORE):
+            fatias, cb, bisel, ch, cubo, cr, raios, cp, pino = self._eng[i]
             ct, st = math.cos(ang[i]), math.sin(ang[i])
-            px = ox + (self._pos[i][0] - self._cx) * esc
-            py = oy + (self._pos[i][1] - self._cy) * esc * 0.85     # inclinacao (4D)
-            for k, _c, ln in camadas:
+            px, py = self._xy(self._pos[i], esc, ox, oy)
+            for k, _c, mesh in fatias:
                 dx, dy = k * profund * 0.7, -k * profund
-                ln.points = [v for gx, gy in self._gab[i]
-                             for v in (px + dx + (gx * ct - gy * st) * esc,
-                                       py + dy + (gx * st + gy * ct) * esc * 0.85)]
-            r = n / 2.0 * 0.42
-            pts = []
-            for j in range(5):                # raios do cubo girando junto
+                pts = [(px + dx + (gx * ct - gy * st) * esc,
+                        py + dy + (gx * st + gy * ct) * esc * 0.85) for gx, gy in self._gab[i]]
+                mesh.vertices, mesh.indices = self._fan(px + dx, py + dy, pts)
+            r0, r1 = n / 2.0 * 0.40 * esc, n / 2.0 * 0.80 * esc
+            seg = []
+            for j in range(5):                 # 5 raios escuros que giram sobre o bisel
                 a = ang[i] + j * 2 * math.pi / 5
-                pts += [px, py, px + math.cos(a) * r * esc, py + math.sin(a) * r * esc * 0.85]
-            for j in range(21):               # aro do cubo
-                a = j * 2 * math.pi / 20
-                pts += [px + math.cos(a) * r * esc, py + math.sin(a) * r * esc * 0.85]
-            cubo.points = pts
+                seg += [px + math.cos(a) * r0, py + math.sin(a) * r0 * 0.85,
+                        px + math.cos(a) * r1, py + math.sin(a) * r1 * 0.85]
+            raios.points = seg
+        # impulso neon: cabeca em s e rastro para tras ao longo do circuito
+        cab = self._s
+        rastro = [self._xy(self.ponto_na_rota(cab - d * 0.9), esc, ox, oy) for d in range(0, 16)]
+        pts = [v for p in rastro for v in p]
+        for _c, ln in self._brilho:
+            ln.points = pts
 
     def _tick(self, dt):
-        vel = 0.10 if self.gerando else 0.010
-        self._a += ((0.60 if self.gerando else 0.22) - self._a) * 0.1
-        self._rpm += ((8000 if self.gerando else 800) - self._rpm) * 0.08
-        self._raiz += vel
-        for camadas, cc, _ln in self._cam:
-            for k, c, _l in camadas:
-                c.a = self._a * (1.0, 0.5, 0.28)[k]
-            cc.a = self._a * 0.8
+        gera = self.gerando
+        self._a += ((0.92 if gera else 0.55) - self._a) * 0.1
+        self._rpm += ((8000 if gera else 800) - self._rpm) * 0.08
+        self._raiz += 0.10 if gera else 0.010
+        self._s = (self._s + (1.6 if gera else 0.45)) % (self._cum[-1] + 18)
+        for fatias, cb, bisel, ch, cubo, cr, raios, cp, pino in self._eng:
+            for _k, c, _m in fatias:
+                c.a = self._a
+            for c in (cb, ch, cr, cp):
+                c.a = self._a
+        self._fio_c.a = self._a * 0.7
+        self._saida_c.a = self._a * (0.95 if self._s > self._cum[-1] - 6 else 0.45)
+        for (c, _ln), base in zip(self._brilho, (0.14, 0.30, 0.95)):
+            c.a = base * (1.0 if gera else 0.8)
         self._desenha()
         txt = "%d RPM" % (int(self._rpm) // 50 * 50)
         if txt != self.rpm_lb.text:
