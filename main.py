@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.14.0"
+VERSAO_APP = "1.14.1"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -264,40 +264,75 @@ OURO = (1.00, 0.78, 0.17, 1)
 PRATA = (0.75, 0.75, 0.78, 1)
 
 
+# --- geometria das engrenagens (modulo 1: raio primitivo = dentes / 2) ---------------
+ADD, DED = 0.9, 1.1          # altura do dente acima / abaixo do raio primitivo
+# (dentes, cor, pai, angulo em graus a partir do pai): raiz -> 2 galhos -> 4 folhas
+ARVORE = ((26, BRONZE, None, 0), (18, COBRE, 0, 120), (18, OURO, 0, 60),
+          (12, PRATA, 1, 165), (12, PRATA, 1, 95), (12, PRATA, 2, 15), (12, PRATA, 2, 85))
+
+
+def arvore_centros():
+    """Centros (em modulos) tais que cada filha encosta no pai: distancia = R pai + R filha."""
+    pos = []
+    for n, _c, pai, ang in ARVORE:
+        if pai is None:
+            pos.append((0.0, 0.0))
+        else:
+            d = ARVORE[pai][0] / 2.0 + n / 2.0
+            a = math.radians(ang)
+            pos.append((pos[pai][0] + d * math.cos(a), pos[pai][1] + d * math.sin(a)))
+    return pos
+
+
+def engrenagem_gabarito(n):
+    """Contorno do dente em coordenadas (x, y) para rotacao 0 (dentes trapezoidais)."""
+    r, p, pts = n / 2.0, 2 * math.pi / n, []
+    for k in range(n):
+        a0 = k * p
+        for da, rr in ((-0.27, r - DED), (-0.14, r + ADD), (0.14, r + ADD), (0.27, r - DED)):
+            a = a0 + da * p
+            pts.append((math.cos(a) * rr, math.sin(a) * rr))
+    return pts
+
+
+def fase_filha(ang_pai, n_pai, n_filha, phi):
+    """Angulo da filha para os dentes ENCAIXAREM no pai (phi = direcao pai -> filha)."""
+    return phi + math.pi + (math.pi - n_pai * (ang_pai - phi)) / n_filha
+
+
 class OficinaIA(Widget):
-    """Arvore de engrenagens ao fundo: gira devagar e acelera enquanto o video e gerado.
+    """Engrenagens ao fundo: encaixadas dente a dente como um relogio (a filha gira ao
+    contrario e na razao dos dentes), com volume em 3 camadas. Aceleram enquanto gera.
     So desenho (nao recebe toques); para sozinha quando o app vai para segundo plano."""
-    NOS = ((0.50, 0.30, 0.20, BRONZE), (0.26, 0.52, 0.14, COBRE), (0.74, 0.52, 0.14, OURO),
-           (0.12, 0.76, 0.09, PRATA), (0.38, 0.80, 0.10, PRATA),
-           (0.62, 0.80, 0.10, PRATA), (0.88, 0.76, 0.09, PRATA))
-    GALHOS = ((0, 1), (0, 2), (1, 3), (1, 4), (2, 5), (2, 6))
     gerando = False
 
     def __init__(self, **kw):
         super().__init__(**kw)
-        self._ang = [0.6 * i for i in range(len(self.NOS))]
-        self._a = 0.20                       # opacidade atual (sobe quando gera)
-        self._rpm = 800.0
-        self._on = False
-        self._cores, self._gears, self._fios = [], [], []
+        self._pos = arvore_centros()
+        self._gab = [engrenagem_gabarito(a[0]) for a in ARVORE]
+        xs = [p[0] for p in self._pos]
+        ys = [p[1] for p in self._pos]
+        self._cx, self._cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        self._ext = (max(xs) - min(xs) + 14, max(ys) - min(ys) + 14)
+        self._raiz = 0.0                     # angulo da engrenagem motora
+        self._a, self._rpm, self._on = 0.22, 800.0, False
+        self._cam = []                       # por engrenagem: 3 camadas + cubo
         with self.canvas:
-            for _ in self.GALHOS:
-                self._fios.append((Color(*COBRE[:3], 0.25), Line(points=[0, 0, 0, 0], width=1.6)))
-            for no in self.NOS:
-                c = Color(*no[3][:3], 0.2)
-                self._gears.append((c, Line(points=[0, 0], width=1.4, close=True)))
+            for n, cor, _p, _a in ARVORE:
+                camadas = []
+                for k in (2, 1, 0):          # fundo -> frente
+                    c = Color(*cor[:3], 0.2)
+                    camadas.append((k, c, Line(points=[0, 0], width=1.3 if k == 0 else 1.0,
+                                               close=True)))
+                cc = Color(*cor[:3], 0.2)
+                self._cam.append((camadas, cc, Line(points=[0, 0], width=1.2)))
         self.rpm_lb = Label(text="800 RPM", font_size=sp(9), color=alpha(MUTED, 0.7),
                             size_hint=(None, None), size=(dp(90), dp(16)))
         self.add_widget(self.rpm_lb)
-        self.bind(pos=self._ajusta, size=self._ajusta)     # ajusta quando o layout dá o tamanho
+        self.bind(pos=self._ajusta, size=self._ajusta)     # ajusta quando o layout da o tamanho
 
     def _ajusta(self, *_):
         self.rpm_lb.pos = (self.right - dp(100), self.top - dp(26))
-        w, h = self.size
-        for (cor, ln), (a, b) in zip(self._fios, self.GALHOS):
-            na, nb = self.NOS[a], self.NOS[b]
-            ln.points = [self.x + na[0] * w, self.y + na[1] * h,
-                         self.x + nb[0] * w, self.y + nb[1] * h]
         self._desenha()
 
     def ligar(self, on):
@@ -307,36 +342,56 @@ class OficinaIA(Widget):
             Clock.unschedule(self._tick)
         self._on = on
 
+    def angulos(self):
+        """Angulo de cada engrenagem (a motora gira; as outras seguem encaixadas)."""
+        ang = [0.0] * len(ARVORE)
+        ang[0] = self._raiz
+        for i, (n, _c, pai, _g) in enumerate(ARVORE):
+            if pai is None:
+                continue
+            phi = math.atan2(self._pos[i][1] - self._pos[pai][1],
+                             self._pos[i][0] - self._pos[pai][0])
+            ang[i] = fase_filha(ang[pai], ARVORE[pai][0], n, phi)
+        return ang
+
     def _desenha(self):
         w, h = self.size
-        base = min(w, h) or 1
-        for i, (no, (cor, ln)) in enumerate(zip(self.NOS, self._gears)):
-            cx, cy, r = self.x + no[0] * w, self.y + no[1] * h, no[2] * base
-            dentes = 12 if r > base * 0.12 else 9
-            dente, pts = r * 0.16, []
-            for k in range(dentes):
-                a0 = self._ang[i] + k * 2 * math.pi / dentes
-                passo = 2 * math.pi / dentes
-                for da, rr in ((0.0, r), (0.2, r + dente), (0.55, r + dente), (0.75, r)):
-                    a = a0 + da * passo
-                    pts += [cx + math.cos(a) * rr, cy + math.sin(a) * rr]
-            ln.points = pts
+        esc = min(w * 0.94 / self._ext[0], h * 0.72 / (self._ext[1] / 0.85))
+        ox, oy = self.x + w / 2, self.y + h * 0.46
+        profund = max(2.0, esc * 0.45)          # espessura aparente (px)
+        ang = self.angulos()
+        for i, ((n, _cor, _p, _g), (camadas, _cc, cubo)) in enumerate(zip(ARVORE, self._cam)):
+            ct, st = math.cos(ang[i]), math.sin(ang[i])
+            px = ox + (self._pos[i][0] - self._cx) * esc
+            py = oy + (self._pos[i][1] - self._cy) * esc * 0.85     # inclinacao (4D)
+            for k, _c, ln in camadas:
+                dx, dy = k * profund * 0.7, -k * profund
+                ln.points = [v for gx, gy in self._gab[i]
+                             for v in (px + dx + (gx * ct - gy * st) * esc,
+                                       py + dy + (gx * st + gy * ct) * esc * 0.85)]
+            r = n / 2.0 * 0.42
+            pts = []
+            for j in range(5):                # raios do cubo girando junto
+                a = ang[i] + j * 2 * math.pi / 5
+                pts += [px, py, px + math.cos(a) * r * esc, py + math.sin(a) * r * esc * 0.85]
+            for j in range(21):               # aro do cubo
+                a = j * 2 * math.pi / 20
+                pts += [px + math.cos(a) * r * esc, py + math.sin(a) * r * esc * 0.85]
+            cubo.points = pts
 
     def _tick(self, dt):
-        alvo_a, vel = (0.55, 0.12) if self.gerando else (0.20, 0.012)
-        self._a += (alvo_a - self._a) * 0.1
+        vel = 0.10 if self.gerando else 0.010
+        self._a += ((0.60 if self.gerando else 0.22) - self._a) * 0.1
         self._rpm += ((8000 if self.gerando else 800) - self._rpm) * 0.08
-        for i in range(len(self._ang)):
-            self._ang[i] += vel * (1 if i % 2 == 0 else -1)
-        for (c, _), no in zip(self._gears, self.NOS):
-            c.a = self._a
-        for c, _ in self._fios:
-            c.a = self._a * 0.8
+        self._raiz += vel
+        for camadas, cc, _ln in self._cam:
+            for k, c, _l in camadas:
+                c.a = self._a * (1.0, 0.5, 0.28)[k]
+            cc.a = self._a * 0.8
         self._desenha()
         txt = "%d RPM" % (int(self._rpm) // 50 * 50)
         if txt != self.rpm_lb.text:
             self.rpm_lb.text = txt
-
 
 
 class NeonBar(Widget):
