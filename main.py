@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.17.0"
+VERSAO_APP = "1.18.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -262,13 +262,15 @@ BRONZE = (0.80, 0.50, 0.20, 1)
 COBRE = (0.72, 0.45, 0.20, 1)
 OURO = (1.00, 0.78, 0.17, 1)
 PRATA = (0.75, 0.75, 0.78, 1)
+LATAO = (0.62, 0.45, 0.17, 1)          # latao envelhecido (visual do GIF)
+LATAO2 = (0.50, 0.38, 0.24, 1)
 
 
 # --- geometria das engrenagens (modulo 1: raio primitivo = dentes / 2) ---------------
 ADD, DED = 0.9, 1.1          # altura do dente acima / abaixo do raio primitivo
 # (dentes, cor, pai, angulo em graus a partir do pai): raiz -> 2 galhos -> 4 folhas
-ARVORE = ((26, OURO, None, 0), (18, PRATA, 0, 120), (18, PRATA, 0, 60),
-          (12, OURO, 1, 165), (12, OURO, 1, 95), (12, OURO, 2, 15), (12, OURO, 2, 85))
+ARVORE = ((26, LATAO, None, 0), (18, LATAO2, 0, 120), (18, LATAO2, 0, 60),
+          (12, LATAO, 1, 165), (12, LATAO, 1, 95), (12, LATAO, 2, 15), (12, LATAO, 2, 85))
 # caminho do impulso (indices das engrenagens): sai da raiz, passa por todas e volta;
 # o ultimo ponto e a SAIDA (abaixo da raiz). Depois recomeca.
 ROTA = (0, 1, 3, 1, 4, 1, 0, 2, 5, 2, 6, 2, 0, "S")
@@ -314,6 +316,108 @@ def rota_pontos():
 def tom(cor, f, mistura=0.0):
     """Escurece (f<1) ou clareia (mistura>0 puxa para o branco) uma cor RGB."""
     return tuple(min(1.0, c * f + (1 - c * f) * mistura) for c in cor[:3])
+
+
+def campo_engrenagens(larg=60.0, alt=130.0, alvo=38, semente=11):
+    """Campo denso de engrenagens (como no GIF): cada nova engrenagem encaixa no pai e nao
+    encosta em nenhuma outra. Retorna [(x, y, dentes, pai, cor)] em modulos."""
+    import random
+    rnd = random.Random(semente)
+    cores = ((0.28, 0.19, 0.09), (0.33, 0.24, 0.11), (0.23, 0.17, 0.09), (0.38, 0.28, 0.13),
+             (0.26, 0.22, 0.16))
+    gs = [(larg * 0.5, alt * 0.45, 20, None, cores[0])]
+    fila = [0]
+    while fila and len(gs) < alvo:
+        i = fila.pop(0)
+        px, py, pn = gs[i][0], gs[i][1], gs[i][2]
+        for _ in range(14):
+            n = rnd.choice((9, 11, 13, 16, 19, 23))
+            a = rnd.uniform(0, 2 * math.pi)
+            d = pn / 2.0 + n / 2.0
+            x, y = px + math.cos(a) * d, py + math.sin(a) * d
+            if not (-6 <= x <= larg + 6 and -6 <= y <= alt + 6):
+                continue
+            if any(math.dist((x, y), (g[0], g[1])) < g[2] / 2.0 + n / 2.0 + (0 if k == i else 2.2)
+                   for k, g in enumerate(gs)):
+                continue
+            gs.append((x, y, n, i, rnd.choice(cores)))
+            fila.append(len(gs) - 1)
+            if len(gs) >= alvo:
+                break
+    return gs
+
+
+class CampoEngrenagens(Widget):
+    """Fundo: campo denso de engrenagens de latao escuro, todas encaixadas, girando bem
+    devagar (como no GIF de referencia). So decoracao: nao recebe toque; pausa em segundo
+    plano."""
+    gerando = False
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._g = campo_engrenagens()
+        self._gab = [engrenagem_gabarito(g[2]) for g in self._g]
+        self._t, self._on = 0.0, False
+        self._m = []
+        with self.canvas:
+            for x, y, n, _p, cor in self._g:
+                cs = Color(*tom(cor, 0.45), 0.85)
+                sombra = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                cf = Color(*cor, 0.9)
+                face = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                ch = Color(*tom(cor, 0.35), 0.95)
+                cubo = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                self._m.append((sombra, face, cubo))
+        self.bind(pos=self._desenha, size=self._desenha)
+
+    def _esc(self):
+        return max(self.width / 60.0, 0.1), self.x, self.y
+
+    def angulos(self):
+        ang = [0.0] * len(self._g)
+        ang[0] = self._t
+        for i, (x, y, n, pai, _c) in enumerate(self._g):
+            if pai is None:
+                continue
+            phi = math.atan2(y - self._g[pai][1], x - self._g[pai][0])
+            ang[i] = fase_filha(ang[pai], self._g[pai][2], n, phi)
+        return ang
+
+    def _desenha(self, *_):
+        if not self.width:
+            return
+        esc, ox, oy = self._esc()
+        ang = self.angulos()
+        for i, (x, y, n, _p, _c) in enumerate(self._g):
+            sombra, face, cubo = self._m[i]
+            ct, st = math.cos(ang[i]), math.sin(ang[i])
+            px, py = ox + x * esc, oy + y * esc
+            for mesh, dx, dy in ((sombra, esc * 0.5, -esc * 0.7), (face, 0, 0)):
+                pts = [(px + dx + (gx * ct - gy * st) * esc, py + dy + (gx * st + gy * ct) * esc)
+                       for gx, gy in self._gab[i]]
+                mesh.vertices, mesh.indices = CampoEngrenagens._fan(px + dx, py + dy, pts)
+            r = n / 2.0 * 0.45 * esc
+            circ = [(px + math.cos(a) * r, py + math.sin(a) * r)
+                    for a in (j * 2 * math.pi / 14 for j in range(14))]
+            cubo.vertices, cubo.indices = CampoEngrenagens._fan(px, py, circ)
+
+    @staticmethod
+    def _fan(cx, cy, pts):
+        v = [cx, cy, 0, 0]
+        for x, y in pts + pts[:1]:
+            v += [x, y, 0, 0]
+        return v, list(range(len(v) // 4))
+
+    def ligar(self, on):
+        if on and not self._on:
+            Clock.schedule_interval(self._tick, 1 / 15.0)
+        elif not on and self._on:
+            Clock.unschedule(self._tick)
+        self._on = on
+
+    def _tick(self, dt):
+        self._t += (0.06 if self.gerando else 0.012)
+        self._desenha()
 
 
 class OficinaIA(Widget):
@@ -669,16 +773,19 @@ class MenuArvore(Widget):
                 e = (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
                 cx, cy = (a[0] + e[0]) / 2, (a[1] + e[1]) / 2
                 curva = dp(18) * (1 if (c[-1] % 2) else -1)
-                Color(*alpha(COBRE, 0.9))                     # ramo organico (bezier)
+                Color(1.0, 0.35, 0.05, 0.35)                  # ramo de lava (bezier): brilho
+                Line(bezier=[a[0], a[1], cx + curva, cy, cx - curva, cy, e[0], e[1]],
+                     width=dp(5.0))
+                Color(1.0, 0.5, 0.1, 0.95)
                 Line(bezier=[a[0], a[1], cx + curva, cy, cx - curva, cy, e[0], e[1]],
                      width=dp(2.4))
-                Color(*alpha(LAVA_LARANJA, 0.5))
+                Color(1.0, 0.9, 0.55, 0.9)
                 Line(bezier=[a[0], a[1], cx + curva, cy, cx - curva, cy, e[0], e[1]],
                      width=dp(1.0))
                 z = raio_zigzag(a, e, quad * 131 + hash(c) % 997)
-                Color(*alpha(CYAN, 0.35))                     # raio neon (brilho)
+                Color(0.2, 0.55, 1.0, 0.35)                   # raio azul-neon (brilho)
                 Line(points=z, width=dp(3.4))
-                Color(0.75, 1.0, 0.98, 0.95)
+                Color(0.8, 0.92, 1.0, 0.95)
                 Line(points=z, width=dp(1.1))
             for c in vis:                                     # 2) nos
                 x, y = self._pos[c]
@@ -688,14 +795,23 @@ class MenuArvore(Widget):
                 raiz = not c
                 r = dp(26 if raiz else 20) * (0.4 + 0.6 * f)
                 aberto = c in self._abertos
-                Color(*alpha(LAVA_VERM, (0.20 + 0.18 * pulso) * f))      # aura vermelha
-                Ellipse(pos=(x - r * 1.7, y - r * 1.7), size=(r * 3.4, r * 3.4))
-                Color(0.03, 0.03, 0.05, 1)                                 # corpo escuro
-                Ellipse(pos=(x - r, y - r), size=(r * 2, r * 2))
-                Color(*alpha(LAVA_LARANJA, 0.95))                          # brilho laranja
-                Line(circle=(x, y, r), width=dp(2.6))
-                Color(*alpha(LAVA_AMARELO, 0.95 if (aberto or raiz) else 0.7))   # nucleo amarelo
-                Line(circle=(x, y, r * 0.72), width=dp(1.1))
+                if raiz:                                                   # esfera brilhante
+                    for k_, (m_, a_) in enumerate(((3.0, 0.10), (2.2, 0.18), (1.6, 0.30))):
+                        Color(1.0, 0.45 + 0.1 * k_, 0.1, a_ * (0.7 + 0.5 * pulso))
+                        Ellipse(pos=(x - r * m_, y - r * m_), size=(r * m_ * 2, r * m_ * 2))
+                    Color(1.0, 0.55, 0.12, 1)
+                    Ellipse(pos=(x - r, y - r), size=(r * 2, r * 2))
+                    Color(1.0, 0.92, 0.7, 1)
+                    Ellipse(pos=(x - r * 0.55, y - r * 0.55), size=(r * 1.1, r * 1.1))
+                else:
+                    Color(*alpha(LAVA_VERM, (0.20 + 0.18 * pulso) * f))      # aura vermelha
+                    Ellipse(pos=(x - r * 1.7, y - r * 1.7), size=(r * 3.4, r * 3.4))
+                    Color(0.03, 0.03, 0.05, 1)                                 # corpo escuro
+                    Ellipse(pos=(x - r, y - r), size=(r * 2, r * 2))
+                    Color(*alpha(LAVA_LARANJA, 0.95))                          # brilho laranja
+                    Line(circle=(x, y, r), width=dp(2.6))
+                    Color(*alpha(LAVA_AMARELO, 0.95 if aberto else 0.7))       # nucleo amarelo
+                    Line(circle=(x, y, r * 0.72), width=dp(1.1))
                 if filhos:
                     Color(*alpha(CYAN, 0.8))
                     Ellipse(pos=(x - dp(2.5), y + r * 0.35), size=(dp(5), dp(5)))
@@ -797,6 +913,8 @@ class TtokenApp(App):
 
         root = FloatLayout()
         root.add_widget(Backdrop(size_hint=(1, 1)))
+        self.campo = CampoEngrenagens(size_hint=(1, 1))   # campo denso de engrenagens (fundo)
+        root.add_widget(self.campo)
         self.oficina = OficinaIA(size_hint=(1, 1))      # engrenagens ao fundo (so decoracao)
         root.add_widget(self.oficina)
         scroll = ScrollView(do_scroll_x=False, bar_width=0, size_hint=(1, 1))
@@ -1166,6 +1284,9 @@ class TtokenApp(App):
         of = getattr(self, "oficina", None)
         if of is not None:
             of.gerando = gerando
+        cp_ = getattr(self, "campo", None)
+        if cp_ is not None:
+            cp_.gerando = gerando
         mn = getattr(self, "menu", None)
         if mn is not None:
             mn.gerando = gerando
@@ -1174,6 +1295,8 @@ class TtokenApp(App):
         self._fundo = True
         if getattr(self, "oficina", None) is not None:
             self.oficina.ligar(False)
+        if getattr(self, "campo", None) is not None:
+            self.campo.ligar(False)
         if getattr(self, "menu", None) is not None:
             self.menu.parar(True)
         return True
@@ -1182,6 +1305,8 @@ class TtokenApp(App):
         self._fundo = False
         if getattr(self, "oficina", None) is not None:
             self.oficina.ligar(True)
+        if getattr(self, "campo", None) is not None:
+            self.campo.ligar(True)
         if getattr(self, "menu", None) is not None:
             self.menu.parar(False)
         self._retomar()
@@ -1190,6 +1315,8 @@ class TtokenApp(App):
         self._fundo = False
         if getattr(self, "oficina", None) is not None:
             self.oficina.ligar(True)
+        if getattr(self, "campo", None) is not None:
+            self.campo.ligar(True)
         self._ligar_compartilhar()
         self._retomar()
 
