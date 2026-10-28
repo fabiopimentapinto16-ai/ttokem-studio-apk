@@ -25,7 +25,7 @@ def _frames(prompt, n, beta, seed):
 
 class Servidor:
     """Sobe o handler do servidor local numa porta livre (como se fosse Colab/celular)."""
-    def __init__(self, motor=None, chave="sk-ttoken-2026"):
+    def __init__(self, motor=None, chave="k-teste"):
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), sl.fazer_handler(
             motor or sl.MotorLocal(gerador=_frames), chave))
         self.url = "http://127.0.0.1:%d" % self.srv.server_address[1]
@@ -52,9 +52,36 @@ class TestLinks(unittest.TestCase):
         self.assertEqual(mt.normalizar_link("  "), "")
         self.assertEqual(mt.normalizar_link("https://x.app/"), "https://x.app")
 
+    def test_link_e_chave_juntos(self):
+        self.assertEqual(mt.separar_link_chave("abc.trycloudflare.com/#k123"),
+                         ("https://abc.trycloudflare.com", "k123"))
+        self.assertEqual(mt.separar_link_chave("http://127.0.0.1:8000#z", local=True),
+                         ("http://127.0.0.1:8000", "z"))
+        with tempfile.TemporaryDirectory() as d:
+            mt.salvar_links(d, "https://x.app#segredo", "")
+            self.assertEqual(mt.carregar_links(d)["chave"], "segredo")
+
+    def test_servidor_sem_chave_embutida(self):
+        self.assertGreaterEqual(len(sc.CHAVE), 8)        # aleatoria, nao embutida
+        self.assertNotEqual(sc.CHAVE, "sk-ttoken-2026")
+        self.assertNotEqual(sl.CHAVE, "sk-ttoken-2026")
+
+    def test_servidor_em_thread_liga_e_desliga(self):
+        srv = sl.iniciar_em_thread("k", porta=0, motor=sl.MotorLocal(gerador=_frames))
+        porta = srv.server_address[1]
+        import urllib.request
+        self.assertEqual(urllib.request.urlopen("http://127.0.0.1:%d/saude" % porta, timeout=5).status, 200)
+        srv.shutdown(); srv.server_close()
+        with self.assertRaises(OSError):                   # porta ocupada -> OSError
+            a = sl.iniciar_em_thread("k", porta=0, motor=sl.MotorLocal(gerador=_frames))
+            try:
+                sl.iniciar_em_thread("k", porta=a.server_address[1])
+            finally:
+                a.shutdown(); a.server_close()
+
     def test_salvar_e_carregar(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(mt.carregar_links(d)["chave"], mt.CHAVE_PADRAO)   # sem arquivo
+            self.assertEqual(mt.carregar_links(d)["chave"], "")   # sem chave embutida
             mt.salvar_links(d, "x.trycloudflare.com", "127.0.0.1:8000", "minha")
             dados = mt.carregar_links(d)
             self.assertEqual(dados, {"colab": "https://x.trycloudflare.com",
@@ -70,6 +97,7 @@ class TestCascata(unittest.TestCase):
         self.msgs = []
 
     def maestro(self, **kw):
+        kw.setdefault("chave_api", "k-teste")
         return mt.MaestroTtoken(pasta=self.pasta, **kw)
 
     def test_local_primeiro(self):

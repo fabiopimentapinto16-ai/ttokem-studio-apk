@@ -54,7 +54,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.20.0"
+VERSAO_APP = "1.21.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -72,6 +72,8 @@ CHAVES = [("groq", "GROQ (texto)", "GROQ_API_KEY"),
           ("fal", "FAL.AI (video)", "FAL_KEY"),
           ("youtube", "YOUTUBE (ver os mais assistidos)", "YOUTUBE_API_KEY"),
           ("pexels", "PEXELS (banco de videos gratis, plano B)", "PEXELS_API_KEY"),
+          ("agnes", "AGNES AI (video)", "AGNES_API_KEY"),
+          ("bigmodel", "BIGMODEL / ZHIPU (video CogVideoX-Flash)", "BIGMODEL_API_KEY"),
           ("build", "SENHA DE BUILD (compilar pelo Git, igual a BUILD_SECRET)",
            "TTOKEN_BUILD_SECRET")]
 
@@ -94,11 +96,25 @@ LINKS = {"groq": "https://console.groq.com/keys",
          "gemini": "https://aistudio.google.com/apikey",
          "hf": "https://huggingface.co/settings/tokens",
          "reflection": "https://platform.reflection.ai",
-         "magichour": "https://magichour.ai/sign-up?invite=cmvi7zfwj0053ii01kaxzyw6t",   # link de indicacao do dono do app
+         "magichour": "https://magichour.ai/sign-up",
+         "agnes": "https://apihub.agnes-ai.com",
+         "bigmodel": "https://open.bigmodel.cn/usercenter/apikeys",
          "fal": "https://fal.ai/dashboard/keys",
          "youtube": "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
          "pexels": "https://www.pexels.com/api/"}
 TEXTO_KEYS = ("groq", "openrouter", "gemini", "hf", "reflection")
+
+# Links de INDICACAO do dono do app: quando existe um aqui, o botao "Pegar chave gratis" abre
+# ele no lugar do link comum (a pessoa se cadastra pelo seu convite). Para adicionar outro,
+# coloque  "chave": "https://...convite..."  (a mesma chave usada em LINKS).
+INDICACOES = {
+    "magichour": "https://magichour.ai/sign-up?invite=cmvi7zfwj0053ii01kaxzyw6t",
+}
+
+
+def link_chave(chave):
+    """Link para pegar a chave gratis: o de indicacao do dono (se houver) ou o comum."""
+    return INDICACOES.get(chave) or LINKS.get(chave, "")
 
 # redes: abrimos o app que o usuario ja tem logado (sem login/OAuth no nosso app)
 SOCIAIS = [("Instagram", "com.instagram.android"),
@@ -723,8 +739,8 @@ ARVORE_MENU = ("GERAR", "raiz", (
     ("SITE", "site", (("SISTEMA", "sistema", ()), ("PAINEL", "painel", ()))),
     ("AJUSTES", "ajustes", (("CHAVES", "chaves", ()), ("COFRE", "cofre", ()),
                             ("MOTOR", "motor", ()))),
-    ("INDICAR", "indicar", (("MAGIC HOUR", "l_magic", ()), ("SYNTX", "l_syntx", ()),
-                            ("MINIMAX", "l_minimax", ()))),
+    ("INDICAR", "indicar", (("CHAVES GRATIS", "chaves", ()), ("MAGIC HOUR", "l_magic", ()),
+                            ("SYNTX", "l_syntx", ()), ("MINIMAX", "l_minimax", ()))),
 ))
 
 IAS_SITES = {"ia_gemini": ("Gemini", "https://gemini.google.com/app"),
@@ -1503,15 +1519,14 @@ class TtokenApp(App):
                 self._ver(("chaves",))
                 if not self.chaves_slot.children:
                     self._alternar_chaves()
-            elif chave in ("cofre", "motor"):
+            elif chave == "motor":
+                self._ligar_local()
+            elif chave == "cofre":
                 self._ver(("ideia",))
-                self.modo_lb.text = (
-                    "COFRE: moedas gratis que voce nao usa no dia ficam guardadas no servidor."
-                    if chave == "cofre" else
-                    "MOTOR: o Maestro escolhe sozinho o gerador de video disponivel e troca "
-                    "se um acabar o credito.")
+                self.modo_lb.text = ("COFRE: moedas gratis que voce nao usa no dia ficam "
+                                     "guardadas no servidor.")
             elif chave in ("sistema", "painel"):
-                webbrowser.open(API.rstrip("/") + "/" + chave)
+                self._abrir_site(chave)
             elif chave == "mestre":
                 self._aba("chat")
                 self._colar_prompt_mestre()
@@ -1526,7 +1541,7 @@ class TtokenApp(App):
                 self.modo_lb.text = ("Prompt Mestre copiado: cole na conversa do %s." % nome)
                 webbrowser.open(url)
             elif chave.startswith("l_"):
-                webbrowser.open({"l_magic": LINKS["magichour"],
+                webbrowser.open({"l_magic": link_chave("magichour"),
                                  "l_syntx": "https://syntx.ai",
                                  "l_minimax": "https://hailuoai.video"}[chave])
         except Exception as e:
@@ -1563,12 +1578,12 @@ class TtokenApp(App):
         self.est_cad.add_widget(tlabel("CADASTRO DOS MOTORES (so na primeira vez)", 11, VIOLET,
                                        bold=True))
         self.est_cad.add_widget(tlabel(
-            "Cole o link que aparece no Colab (abra o notebook da pasta colab do projeto e rode). "
-            "O Python local (Pydroid 3) e opcional: use http://127.0.0.1:8000. Os links ficam "
-            "so neste celular (config_links.json).", 12, MUTED))
+            "Use o SEU servidor: abra o notebook do Colab e rode; ele mostra  link#chave. Cole "
+            "tudo no campo do Colab (a chave e separada sozinha). O Python local (Pydroid 3 ou "
+            "o botao MOTOR) e opcional. Tudo fica so neste celular (config_links.json).", 12, MUTED))
         self.est_colab = self._campo("Link do Colab (https://....trycloudflare.com)", links["colab"])
         self.est_local = self._campo("Link do Python local (opcional)", links["local"])
-        self.est_chave = self._campo("Chave (x-api-key)", links["chave"], senha=True)
+        self.est_chave = self._campo("Chave (vem junto: link#chave)", links["chave"], senha=True)
         for rot, campo in (("LINK DO COLAB", self.est_colab), ("PYTHON LOCAL (opcional)",
                                                                  self.est_local),
                            ("CHAVE", self.est_chave)):
@@ -1605,6 +1620,68 @@ class TtokenApp(App):
         self._est_msg("Ola! Escreva o que voce quer ver e toque em GERAR. Eu tento o Python "
                       "local, depois o Colab (GPU) e por fim as APIs gratis.")
 
+    def _abrir_site(self, rota):
+        """SISTEMA/PAINEL: primeiro LIGA o servidor (o SnapDeploy dorme quando ocioso) e so
+        depois abre o site, para nao cair numa pagina de erro."""
+        self._ver(("ideia",))
+        self.modo_lb.text = "Ligando o servidor (pode levar ate 1 minuto)..."
+
+        def trabalho():
+            ok, s = False, requests.Session()
+            limite = time.time() + WAKE_WAIT
+            while time.time() < limite and not ok:
+                try:
+                    ok = s.get(API + "/health", timeout=15).status_code == 200
+                except Exception:
+                    ok = False
+                if not ok:
+                    time.sleep(4)
+            self._ui(self._site_pronto, rota, ok)
+        threading.Thread(target=trabalho, daemon=True).start()
+
+    def _site_pronto(self, rota, ok):
+        self.modo_lb.text = ("Servidor ligado." if ok else
+                             "O servidor nao respondeu; abrindo mesmo assim.")
+        webbrowser.open(API.rstrip("/") + "/" + rota)
+
+    def _ligar_local(self):
+        """MOTOR: liga/desliga o servidor Python local (127.0.0.1:8000) dentro do app e
+        cadastra o link dele no Estudio. Sem torch/diffusers no app ele responde Offline e o
+        Maestro passa para o Colab; para gerar no celular rode servidor_local.py no Pydroid 3."""
+        self._abrir_estudio()
+        srv = getattr(self, "_srv_local", None)
+        if srv is not None:
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
+            self._srv_local = None
+            self._est_msg("🔌 Servidor Python local desligado.")
+            return
+        try:
+            import secrets
+            from servidores import servidor_local
+            links = maestro_ttoken.carregar_links(self._pasta_dados())
+            chave = links["chave"] or secrets.token_urlsafe(9)
+            try:
+                self._srv_local = servidor_local.iniciar_em_thread(chave)
+                estado = "ligado em 127.0.0.1:8000"
+            except OSError:
+                self._srv_local = None
+                estado = "porta 8000 ja em uso (se o Pydroid esta rodando o servidor, o app usa ele)"
+            maestro_ttoken.salvar_links(self._pasta_dados(), links["colab"],
+                                        "http://127.0.0.1:8000", chave)
+            self.est_local.text = "http://127.0.0.1:8000"
+            self.est_chave.text = chave
+            pronto = servidor_local.MotorLocal().disponivel()
+            self._est_msg("⚙️ Servidor Python local %s. %s" % (estado, (
+                "Modelo disponivel." if pronto else
+                "Sem torch/diffusers neste app: ele responde Offline e o Maestro usa o Colab. "
+                "Para gerar no celular, rode servidores/servidor_local.py no Pydroid 3.")))
+        except Exception as e:
+            self._est_msg("⚠️ Nao consegui ligar o servidor local: %s" % str(e)[:80])
+
     def _abrir_estudio(self):
         self._aba("estudio")
         self.p_estudio.clear_widgets()
@@ -1623,7 +1700,7 @@ class TtokenApp(App):
     def _est_salvar_links(self, *_):
         try:
             maestro_ttoken.salvar_links(self._pasta_dados(), self.est_colab.text,
-                                        self.est_local.text, self.est_chave.text)
+                                        self.est_local.text, self.est_chave.text)   # aceita link#chave
             self._est_msg("💾 Links salvos neste celular.")
         except Exception as e:
             self._est_msg("⚠️ Nao consegui salvar os links: %s" % str(e)[:60])
@@ -2510,9 +2587,9 @@ class TtokenApp(App):
             colar = Chip("Colar", height=34)
             colar.bind(on_release=lambda w, t=ti: self._colar(t))
             linha.add_widget(colar)
-            if campo in LINKS:
+            if campo in LINKS or campo in INDICACOES:
                 pegar = Chip("Pegar chave gratis", height=34)
-                pegar.bind(on_release=lambda w, u=LINKS[campo]: webbrowser.open(u))
+                pegar.bind(on_release=lambda w, u=link_chave(campo): webbrowser.open(u))
                 linha.add_widget(pegar)
             card.add_widget(linha)
         salvar = NeonButton("SALVAR CHAVES", height=dp(48))

@@ -6,18 +6,19 @@ torch/diffusers nao estiverem instalados, ou o servidor nao estiver rodando, o a
 "Offline" e passa para o Colab.
 
 Pydroid 3: instale (Pip) torch, diffusers, transformers, accelerate, pillow, numpy e rode este
-arquivo. No app, cadastre o link:  http://127.0.0.1:8000
+arquivo. Ele imprime  http://127.0.0.1:8000#chave : cole isso no cadastro do app.
 Usa so a biblioteca padrao para o servidor HTTP (nao precisa de FastAPI).
 """
 import base64
 import json
 import os
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 
-CHAVE = os.environ.get("TTOKEN_KEY", "sk-ttoken-2026")
+CHAVE = os.environ.get("TTOKEN_KEY") or secrets.token_urlsafe(9)   # aleatoria, so sua
 MODELO = "stabilityai/sd-turbo"
 PORTA = 8000
 LADO = 256
@@ -107,11 +108,19 @@ def fazer_handler(motor, chave=CHAVE):
     return H
 
 
+def iniciar_em_thread(chave, porta=PORTA, motor=None):
+    """Liga o servidor dentro do proprio app (thread). Levanta OSError se a porta estiver
+    ocupada (ex.: o Pydroid ja esta rodando o servidor)."""
+    srv = ThreadingHTTPServer(("127.0.0.1", porta), fazer_handler(motor or MotorLocal(), chave))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def principal():
     motor = MotorLocal()
-    print("Servidor local Ttoken em http://127.0.0.1:%d  (modelo disponivel: %s)"
-          % (PORTA, motor.disponivel()))
-    ThreadingHTTPServer(("127.0.0.1", PORTA), fazer_handler(motor)).serve_forever()
+    print("Servidor local Ttoken (modelo disponivel: %s)" % motor.disponivel())
+    print("Cole no app:  http://127.0.0.1:%d#%s" % (PORTA, CHAVE))
+    ThreadingHTTPServer(("127.0.0.1", PORTA), fazer_handler(motor, CHAVE)).serve_forever()
 
 
 if __name__ == "__main__":

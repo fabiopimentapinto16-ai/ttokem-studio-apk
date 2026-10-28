@@ -4,8 +4,8 @@
 Regras:
 - nunca trava a interface: tudo roda em thread e fala com a tela por callbacks;
 - cada tentativa vira uma mensagem no chat ("Tentando Python local...", "Colab offline...");
-- links ficam em config_links.json (no celular); a chave padrao e sk-ttoken-2026 (troque no
-  cadastro e no servidor; ela so impede uso por engano, nao e um segredo forte);
+- cada usuario usa o SEU servidor: o link e a chave vem juntos (link#chave) do Colab ou do
+  Pydroid dele e ficam em config_links.json, so no celular. Nao ha chave embutida no app;
 - este modulo nao depende do Kivy: funciona e e testado fora do celular.
 """
 import base64
@@ -16,7 +16,7 @@ import time
 
 import requests
 
-CHAVE_PADRAO = "sk-ttoken-2026"
+CHAVE_PADRAO = ""        # sem chave embutida: cada usuario usa a SUA (o servidor gera uma aleatoria)
 ARQ_CONFIG = "config_links.json"
 TEMPO_LOCAL = 120          # segundos esperando o Python local
 TEMPO_COLAB = 180          # segundos esperando o Colab
@@ -34,6 +34,14 @@ def normalizar_link(texto, local=False):
     return t.rstrip("/")
 
 
+def separar_link_chave(texto, local=False):
+    """'https://x.trycloudflare.com#abc123' -> ('https://x.trycloudflare.com', 'abc123').
+    O servidor imprime link e chave juntos para o usuario colar uma vez so."""
+    t = (texto or "").strip()
+    base, _, chave = t.partition("#")
+    return normalizar_link(base, local=local), chave.strip()
+
+
 def carregar_links(pasta):
     """Le config_links.json; sempre devolve as 3 chaves (colab, local, chave)."""
     dados = {}
@@ -44,13 +52,15 @@ def carregar_links(pasta):
         dados = {}
     return {"colab": normalizar_link(dados.get("colab", "")),
             "local": normalizar_link(dados.get("local", ""), local=True),
-            "chave": (dados.get("chave") or CHAVE_PADRAO).strip() or CHAVE_PADRAO}
+            "chave": (dados.get("chave") or CHAVE_PADRAO).strip()}
 
 
 def salvar_links(pasta, colab="", local="", chave=""):
     """Grava config_links.json (escrita atomica). Devolve o dicionario salvo."""
-    dados = {"colab": normalizar_link(colab), "local": normalizar_link(local, local=True),
-             "chave": (chave or CHAVE_PADRAO).strip() or CHAVE_PADRAO}
+    colab, c1 = separar_link_chave(colab)
+    local, c2 = separar_link_chave(local, local=True)
+    dados = {"colab": colab, "local": local,
+             "chave": (chave or c1 or c2 or CHAVE_PADRAO).strip()}
     os.makedirs(pasta or ".", exist_ok=True)
     destino = os.path.join(pasta or ".", ARQ_CONFIG)
     tmp = destino + ".tmp"
@@ -74,7 +84,7 @@ class MaestroTtoken:
 
     # --- utilidades
     def _headers(self):
-        return {"x-api-key": self.chave_api}
+        return {"x-api-key": self.chave_api} if self.chave_api else {}
 
     def _no_ar(self, base):
         """Teste rapido: False so quando nem conecta (offline). Sem /saude (404) segue em frente."""

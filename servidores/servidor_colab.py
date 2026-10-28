@@ -9,20 +9,22 @@ No fim ele imprime o LINK PUBLICO: cole esse link no cadastro do app (campo "Lin
   Seu teste mostrou que a heranca por img2img (VAE a cada frame) era 0,69x mais lenta; esta
   versao tem o mesmo custo por frame do modo independente. A coerencia (SSIM) vem na resposta
   para voce medir de verdade com `ssim_medio`.
-- Seguranca: a rota /gerar exige o header  x-api-key  (padrao sk-ttoken-2026; troque pela
-  variavel TTOKEN_KEY ou nos Secrets do Colab).
+- Seguranca: a rota /gerar exige o header  x-api-key. A chave e ALEATORIA a cada vez (ou a
+  que voce guardar em TTOKEN_KEY nos Secrets do Colab). Nao existe chave embutida no app.
+  O Colab imprime  link#chave : cole isso uma vez no cadastro do app.
 - Rodar em outra thread: o servidor sobe em thread e a celula do Colab continua livre.
 """
 import base64
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
 import time
 from io import BytesIO
 
-CHAVE = os.environ.get("TTOKEN_KEY", "sk-ttoken-2026")
+CHAVE = os.environ.get("TTOKEN_KEY") or secrets.token_urlsafe(9)   # aleatoria, so sua
 MODELO = "stabilityai/sdxl-turbo"
 PORTA = 8000
 MAX_FRAMES = 16
@@ -138,7 +140,7 @@ def criar_app(motor, chave=CHAVE):
         seed: Optional[int] = None
 
     def _checa(x_api_key):
-        if x_api_key != chave:
+        if not chave or x_api_key != chave:
             raise HTTPException(status_code=401, detail="chave invalida")
 
     @app.get("/saude")
@@ -211,9 +213,8 @@ def principal():
     time.sleep(2)
     url = abrir_tunel(PORTA)
     print("\n" + "=" * 60)
-    print("PRONTO. Cole este link no app (Estudio > Link do Colab):")
-    print(url)
-    print("Chave (x-api-key):", CHAVE)
+    print("PRONTO. Cole isto no app (CRIAR > ESTUDIO > Link do Colab):")
+    print(url + "#" + CHAVE)
     print("=" * 60)
     while True:                       # mantem a celula viva; interrompa para desligar
         time.sleep(60)
