@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.16.0"
+VERSAO_APP = "1.17.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -494,14 +494,23 @@ LAVA_AMARELO = (1.0, 0.85, 0.25, 1)
 ARVORE_MENU = ("GERAR", "raiz", (
     ("CRIAR", "criar", (("IDEIA", "ideia", ()), ("OPCOES", "opcoes", ()),
                         ("IDIOMA", "idioma", ()))),
-    ("CHAT", "chat", ()),
-    ("CODIGO", "code", ()),
+    ("CONVERSAR", "conversar", (
+        ("CHAT", "chat", ()), ("CODIGO", "code", ()), ("MESTRE", "mestre", ()),
+        ("COMANDOS", "comandos", tuple((c.upper(), "cmd:/" + c, ()) for c in (
+            "video", "codigo", "eficiente", "depurar", "legenda", "resumir"))))),
     ("TOP", "trend", ()),
+    ("IAS", "ias", (("GEMINI", "ia_gemini", ()), ("CLAUDE", "ia_claude", ()),
+                    ("GROK", "ia_grok", ()))),
+    ("SITE", "site", (("SISTEMA", "sistema", ()), ("PAINEL", "painel", ()))),
     ("AJUSTES", "ajustes", (("CHAVES", "chaves", ()), ("COFRE", "cofre", ()),
-                            ("MOTOR", "motor", ()), ("SISTEMA", "sistema", ()))),
+                            ("MOTOR", "motor", ()))),
     ("INDICAR", "indicar", (("MAGIC HOUR", "l_magic", ()), ("SYNTX", "l_syntx", ()),
-                            ("GEMINI", "l_gemini", ()), ("MINIMAX", "l_minimax", ()))),
+                            ("MINIMAX", "l_minimax", ()))),
 ))
+
+IAS_SITES = {"ia_gemini": ("Gemini", "https://gemini.google.com/app"),
+             "ia_claude": ("Claude", "https://claude.ai/new"),
+             "ia_grok": ("Grok", "https://grok.com")}
 
 
 def posicoes_menu(raiz, n, w, h, passo, margem, base=20.0, cone=100.0, minimo=None,
@@ -594,6 +603,7 @@ class MenuArvore(Widget):
         if not self.width or not self.height:
             return
         pos = {(): self._raiz()}
+        oculto = set()                       # irmaos de um ramo aberto somem (foco)
         orig = {(): math.pi / 2}
         ordem = [()]
         while ordem:
@@ -605,21 +615,28 @@ class MenuArvore(Widget):
             base = math.degrees(orig[cam])
             cone = 170.0 if not cam else 150.0
             passo = max(dp(98), self.height * 0.27) if not cam else max(dp(78), self.height * 0.21)
-            if cam:                                       # netos sobem em direcao ao centro
-                base = (base + 90.0) / 2.0
+            if cam:                                       # netos crescem para o centro da tela
+                cx_, cy_ = self.width / 2.0 - pai[0], self.height * 0.62 - pai[1]
+                ox_, oy_ = math.cos(orig[cam]), math.sin(orig[cam])
+                nc = math.hypot(cx_, cy_) or 1.0
+                base = math.degrees(math.atan2(oy_ + cy_ / nc, ox_ + cx_ / nc))
             pts = posicoes_menu(pai, len(filhos), self.width, self.height, passo, dp(34),
                                 base=base, cone=cone, minimo=dp(54),
-                                evitar=[v for k_, v in pos.items() if k_ != cam])
+                                evitar=[v for k_, v in pos.items() if k_ not in oculto])
+            aberto_irmao = [k for k in range(len(filhos)) if (cam + (k,)) in self._abertos]
             for k, (x, y) in enumerate(pts):
                 c = cam + (k,)
                 pos[c] = (x, y)
+                if aberto_irmao and k != aberto_irmao[0]:
+                    oculto.add(c)
                 orig[c] = math.atan2(y - pai[1], x - pai[0])
                 ordem.append(c)
         self._pos = pos
         for c in pos:
             self._no.setdefault(c, {"p": 0.0})
         for c, st in self._no.items():
-            st["alvo"] = 1.0 if (c in pos and (len(c) == 0 or c[:-1] in self._abertos)) else 0.0
+            st["alvo"] = 1.0 if (c in pos and c not in oculto
+                                 and (len(c) == 0 or c[:-1] in self._abertos)) else 0.0
 
     # ---- animacao
     def _tick(self, dt):
@@ -1246,12 +1263,24 @@ class TtokenApp(App):
                     if chave == "cofre" else
                     "MOTOR: o Maestro escolhe sozinho o gerador de video disponivel e troca "
                     "se um acabar o credito.")
-            elif chave == "sistema":
-                webbrowser.open(API.rstrip("/") + "/sistema")
+            elif chave in ("sistema", "painel"):
+                webbrowser.open(API.rstrip("/") + "/" + chave)
+            elif chave == "mestre":
+                self._aba("chat")
+                self._colar_prompt_mestre()
+            elif chave.startswith("cmd:"):
+                self._aba("chat")
+                self.chat_inp.text = chave[4:] + " " + (self.chat_inp.text or "")
+                self.chat_inp.focus = True
+            elif chave in IAS_SITES:
+                nome, url = IAS_SITES[chave]
+                Clipboard.copy(PROMPT_MESTRE)               # Prompt Mestre ja copiado
+                self._ver(("ideia",))
+                self.modo_lb.text = ("Prompt Mestre copiado: cole na conversa do %s." % nome)
+                webbrowser.open(url)
             elif chave.startswith("l_"):
                 webbrowser.open({"l_magic": LINKS["magichour"],
                                  "l_syntx": "https://syntx.ai",
-                                 "l_gemini": "https://gemini.google.com/app",
                                  "l_minimax": "https://hailuoai.video"}[chave])
         except Exception as e:
             self._aviso(str(e))
