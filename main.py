@@ -18,7 +18,8 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.clipboard import Clipboard
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Line, Mesh, Rectangle, RoundedRectangle
+from kivy.graphics import (Color, Ellipse, Line, Mesh, PopMatrix, PushMatrix, Rectangle,
+                           RoundedRectangle, Rotate, Translate)
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
 from kivy.properties import BooleanProperty, NumericProperty
@@ -51,7 +52,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.18.0"
+VERSAO_APP = "1.19.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -245,7 +246,18 @@ class Chip(ButtonBehavior, Label):
             self._bg = RoundedRectangle(radius=[self._r])
             self._lc = Color(1, 1, 1, 0.14)
             self._ln = Line(rounded_rectangle=(0, 0, 10, 10, self._r), width=dp(1))
-        self.bind(pos=self._u, size=self._u, active=self._u, state=self._u)
+        self._fs0, self._fit_ok = sp(13), True
+        self.bind(pos=self._u, size=self._u, active=self._u, state=self._u,
+                  texture_size=self._fit, text=self._novo_texto)
+
+    def _novo_texto(self, *_):
+        self.font_size = self._fs0                    # recomeca do tamanho normal
+
+    def _fit(self, *_):
+        """Texto maior que o botao: reduz a fonte para caber (nada vaza nem se sobrepoe)."""
+        livre = self.width - dp(14)
+        if self.width > 1 and self.texture_size[0] > livre and self.font_size > sp(8):
+            self.font_size = max(sp(8), self.font_size * livre / self.texture_size[0] * 0.97)
 
     def _u(self, *_):
         self._bg.pos, self._bg.size = self.pos, self.size
@@ -318,29 +330,34 @@ def tom(cor, f, mistura=0.0):
     return tuple(min(1.0, c * f + (1 - c * f) * mistura) for c in cor[:3])
 
 
-def campo_engrenagens(larg=60.0, alt=130.0, alvo=38, semente=11):
-    """Campo denso de engrenagens (como no GIF): cada nova engrenagem encaixa no pai e nao
-    encosta em nenhuma outra. Retorna [(x, y, dentes, pai, cor)] em modulos."""
+# metais de relogio (escuros, foscos): latao, aco, bronze, ouro velho, grafite
+METAIS = ((0.40, 0.30, 0.14), (0.30, 0.32, 0.36), (0.34, 0.22, 0.12), (0.45, 0.35, 0.15),
+          (0.22, 0.24, 0.28))
+
+
+def campo_engrenagens(larg=100.0, alt=230.0, alvo=95, semente=11):
+    """Campo de engrenagens de relogio suico: cada nova roda encaixa na anterior (distancia =
+    soma dos raios primitivos) e nao encosta em nenhuma outra. Retorna
+    [(x, y, dentes, pai, cor, janelas, joia)] em modulos."""
     import random
     rnd = random.Random(semente)
-    cores = ((0.28, 0.19, 0.09), (0.33, 0.24, 0.11), (0.23, 0.17, 0.09), (0.38, 0.28, 0.13),
-             (0.26, 0.22, 0.16))
-    gs = [(larg * 0.5, alt * 0.45, 20, None, cores[0])]
+    gs = [(larg * 0.5, alt * 0.42, 48, None, METAIS[1], 5, True)]
     fila = [0]
     while fila and len(gs) < alvo:
         i = fila.pop(0)
         px, py, pn = gs[i][0], gs[i][1], gs[i][2]
-        for _ in range(14):
-            n = rnd.choice((9, 11, 13, 16, 19, 23))
+        for _ in range(26):
+            n = rnd.choice((8, 10, 12, 14, 18, 22, 26, 32, 40, 48))
             a = rnd.uniform(0, 2 * math.pi)
             d = pn / 2.0 + n / 2.0
             x, y = px + math.cos(a) * d, py + math.sin(a) * d
-            if not (-6 <= x <= larg + 6 and -6 <= y <= alt + 6):
+            if not (-8 <= x <= larg + 8 and -8 <= y <= alt + 8):
                 continue
-            if any(math.dist((x, y), (g[0], g[1])) < g[2] / 2.0 + n / 2.0 + (0 if k == i else 2.2)
+            if any(math.dist((x, y), (g[0], g[1])) < g[2] / 2.0 + n / 2.0 + (0 if k == i else 2.4)
                    for k, g in enumerate(gs)):
                 continue
-            gs.append((x, y, n, i, rnd.choice(cores)))
+            janelas = 0 if n < 18 else (4 if n < 30 else 5 if n < 44 else 6)
+            gs.append((x, y, n, i, rnd.choice(METAIS), janelas, rnd.random() < 0.35))
             fila.append(len(gs) - 1)
             if len(gs) >= alvo:
                 break
@@ -348,58 +365,42 @@ def campo_engrenagens(larg=60.0, alt=130.0, alvo=38, semente=11):
 
 
 class CampoEngrenagens(Widget):
-    """Fundo: campo denso de engrenagens de latao escuro, todas encaixadas, girando bem
-    devagar (como no GIF de referencia). So decoracao: nao recebe toque; pausa em segundo
-    plano."""
+    """Fundo: engrenagens de relogio suico (dentes finos, raios vazados, joias rubi), todas
+    encaixadas, girando devagar, com um impulso neon que percorre a cadeia e volta. A malha de
+    cada roda e desenhada uma vez; a cada quadro so muda o angulo (barato no celular)."""
     gerando = False
+    BG = (0.02, 0.025, 0.04)
 
     def __init__(self, **kw):
         super().__init__(**kw)
         self._g = campo_engrenagens()
         self._gab = [engrenagem_gabarito(g[2]) for g in self._g]
-        self._t, self._on = 0.0, False
-        self._m = []
-        with self.canvas:
-            for x, y, n, _p, cor in self._g:
-                cs = Color(*tom(cor, 0.45), 0.85)
-                sombra = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
-                cf = Color(*cor, 0.9)
-                face = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
-                ch = Color(*tom(cor, 0.35), 0.95)
-                cubo = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
-                self._m.append((sombra, face, cubo))
-        self.bind(pos=self._desenha, size=self._desenha)
+        self._t, self._on, self._esc, self._rot = 0.0, False, 0.0, []
+        self._rota = self._rota_neon()
+        self._cum = [0.0]
+        for u, v in zip(self._rota, self._rota[1:]):
+            self._cum.append(self._cum[-1] + math.dist(u, v))
+        self._s = 0.0
+        self._brilho = []
+        self.bind(pos=self._montar, size=self._montar)
 
-    def _esc(self):
-        return max(self.width / 60.0, 0.1), self.x, self.y
+    def _rota_neon(self):
+        """Passeio pela arvore de engrenagens (centros): vai ate as pontas e volta a raiz."""
+        filhos = {i: [] for i in range(len(self._g))}
+        for i, g in enumerate(self._g):
+            if g[3] is not None:
+                filhos[g[3]].append(i)
+        pts = []
 
-    def angulos(self):
-        ang = [0.0] * len(self._g)
-        ang[0] = self._t
-        for i, (x, y, n, pai, _c) in enumerate(self._g):
-            if pai is None:
-                continue
-            phi = math.atan2(y - self._g[pai][1], x - self._g[pai][0])
-            ang[i] = fase_filha(ang[pai], self._g[pai][2], n, phi)
-        return ang
-
-    def _desenha(self, *_):
-        if not self.width:
-            return
-        esc, ox, oy = self._esc()
-        ang = self.angulos()
-        for i, (x, y, n, _p, _c) in enumerate(self._g):
-            sombra, face, cubo = self._m[i]
-            ct, st = math.cos(ang[i]), math.sin(ang[i])
-            px, py = ox + x * esc, oy + y * esc
-            for mesh, dx, dy in ((sombra, esc * 0.5, -esc * 0.7), (face, 0, 0)):
-                pts = [(px + dx + (gx * ct - gy * st) * esc, py + dy + (gx * st + gy * ct) * esc)
-                       for gx, gy in self._gab[i]]
-                mesh.vertices, mesh.indices = CampoEngrenagens._fan(px + dx, py + dy, pts)
-            r = n / 2.0 * 0.45 * esc
-            circ = [(px + math.cos(a) * r, py + math.sin(a) * r)
-                    for a in (j * 2 * math.pi / 14 for j in range(14))]
-            cubo.vertices, cubo.indices = CampoEngrenagens._fan(px, py, circ)
+        def anda(i):
+            pts.append((self._g[i][0], self._g[i][1]))
+            for f in filhos[i]:
+                anda(f)
+                pts.append((self._g[i][0], self._g[i][1]))
+        import sys
+        sys.setrecursionlimit(max(1000, sys.getrecursionlimit()))
+        anda(0)
+        return pts
 
     @staticmethod
     def _fan(cx, cy, pts):
@@ -407,6 +408,100 @@ class CampoEngrenagens(Widget):
         for x, y in pts + pts[:1]:
             v += [x, y, 0, 0]
         return v, list(range(len(v) // 4))
+
+    def _montar(self, *_):
+        """(Re)cria o desenho quando o tamanho muda."""
+        if not self.width or not self.height:
+            return
+        esc = self.width / 100.0
+        if abs(esc - self._esc) < 1e-6:
+            return
+        self._esc = esc
+        self.canvas.clear()
+        self._rot = []
+        bg = self.BG
+        with self.canvas:
+            for i, (x, y, n, _p, cor, jan, joia) in enumerate(self._g):
+                px, py, r = self.x + x * esc, self.y + y * esc, n / 2.0 * esc
+                Color(0, 0, 0, 0.5)
+                Ellipse(pos=(px - r * 1.04 + esc * 0.5, py - r * 1.04 - esc * 0.8),
+                        size=(r * 2.08, r * 2.08))
+                PushMatrix()
+                Translate(px, py)
+                rot = Rotate(angle=0, origin=(0, 0))
+                self._rot.append(rot)
+                Color(*cor, 1)
+                pts = [(gx * esc, gy * esc) for gx, gy in self._gab[i]]
+                m = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                m.vertices, m.indices = self._fan(0, 0, pts)
+                Color(*tom(cor, 1.0, 0.30), 0.45)                 # bisel claro da borda
+                Line(circle=(0, 0, r * 0.97), width=max(1.0, esc * 0.30))
+                if jan:                                          # raios vazados (esqueleto)
+                    passo = 2 * math.pi / jan
+                    for k in range(jan):
+                        a0, a1 = k * passo + passo * 0.14, (k + 1) * passo - passo * 0.14
+                        ro, ri = r * 0.80, r * 0.34
+                        arco = [a0 + (a1 - a0) * j / 7.0 for j in range(8)]
+                        poli = [(math.cos(a) * ro, math.sin(a) * ro) for a in arco] + \
+                               [(math.cos(a) * ri, math.sin(a) * ri) for a in reversed(arco)]
+                        am = (a0 + a1) / 2.0
+                        cx_, cy_ = math.cos(am) * (ro + ri) / 2.0, math.sin(am) * (ro + ri) / 2.0
+                        Color(*bg, 1)
+                        w = Mesh(vertices=[0] * 12, indices=[0, 1, 2], mode="triangle_fan")
+                        w.vertices, w.indices = self._fan(cx_, cy_, poli)
+                        Color(*tom(cor, 1.0, 0.25), 0.5)           # fio de luz na janela
+                        Line(points=[v for q in poli + poli[:1] for v in q],
+                             width=max(0.8, esc * 0.18))
+                Color(*tom(cor, 1.1, 0.12), 1)                      # cubo
+                Ellipse(pos=(-r * 0.24, -r * 0.24), size=(r * 0.48, r * 0.48))
+                Color(*bg, 1)
+                Ellipse(pos=(-r * 0.09, -r * 0.09), size=(r * 0.18, r * 0.18))
+                if joia:                                            # joia rubi com engaste dourado
+                    Color(0.85, 0.65, 0.2, 1)
+                    Ellipse(pos=(-r * 0.15, -r * 0.15), size=(r * 0.30, r * 0.30))
+                    Color(0.75, 0.05, 0.12, 1)
+                    Ellipse(pos=(-r * 0.11, -r * 0.11), size=(r * 0.22, r * 0.22))
+                    Color(1, 0.6, 0.65, 0.8)
+                    Ellipse(pos=(-r * 0.06, r * 0.0), size=(r * 0.06, r * 0.06))
+                PopMatrix()
+            self._brilho = []
+            for larg, a in ((9, 0.14), (5, 0.30), (2, 0.95)):       # impulso neon por cima
+                self._brilho.append((Color(*NEON, a), Line(points=[0, 0, 0, 0], width=larg)))
+        self._atualiza()
+
+    def angulos(self):
+        ang = [0.0] * len(self._g)
+        ang[0] = self._t
+        for i, g in enumerate(self._g):
+            if g[3] is None:
+                continue
+            pai = self._g[g[3]]
+            phi = math.atan2(g[1] - pai[1], g[0] - pai[0])
+            ang[i] = fase_filha(ang[g[3]], pai[2], g[2], phi)
+        return ang
+
+    def ponto_na_rota(self, s):
+        s = max(0.0, min(s, self._cum[-1]))
+        for i in range(1, len(self._cum)):
+            if s <= self._cum[i]:
+                seg = self._cum[i] - self._cum[i - 1] or 1.0
+                t = (s - self._cum[i - 1]) / seg
+                a, b = self._rota[i - 1], self._rota[i]
+                return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+        return self._rota[-1]
+
+    def _atualiza(self):
+        if not self._rot:
+            return
+        for rot, a in zip(self._rot, self.angulos()):
+            rot.angle = math.degrees(a)
+        esc = self._esc
+        pts = []
+        for d in range(0, 14):
+            q = self.ponto_na_rota(self._s - d * 1.4)
+            pts += [self.x + q[0] * esc, self.y + q[1] * esc]
+        for _c, ln in self._brilho:
+            ln.points = pts
 
     def ligar(self, on):
         if on and not self._on:
@@ -417,7 +512,8 @@ class CampoEngrenagens(Widget):
 
     def _tick(self, dt):
         self._t += (0.06 if self.gerando else 0.012)
-        self._desenha()
+        self._s = (self._s + (3.2 if self.gerando else 0.9)) % (self._cum[-1] + 20)
+        self._atualiza()
 
 
 class OficinaIA(Widget):
@@ -426,6 +522,7 @@ class OficinaIA(Widget):
     pela saida. Gira devagar; acelera enquanto gera. So desenho: nao recebe toques e para
     sozinho quando o app vai para segundo plano."""
     gerando = False
+    so_rpm = True                                  # rodas antigas ocultas: so o RPM
     CAMADAS = 5                                    # fatias que dao a espessura do metal
 
     def __init__(self, **kw):
@@ -470,6 +567,19 @@ class OficinaIA(Widget):
                             size_hint=(None, None), size=(dp(90), dp(16)))
         self.add_widget(self.rpm_lb)
         self.bind(pos=self._ajusta, size=self._ajusta)     # ajusta quando o layout da o tamanho
+        if self.so_rpm:
+            self._oculta()
+
+    def _oculta(self):
+        """Deixa invisivel o desenho antigo (o fundo agora e o campo de relogio suico)."""
+        for fatias, cb, bisel, ch, cubo, cr, raios, cp, pino in self._eng:
+            for _k, c, _m in fatias:
+                c.a = 0
+            for c in (cb, ch, cr, cp):
+                c.a = 0
+        self._fio_c.a = self._saida_c.a = 0
+        for c, _ln in self._brilho:
+            c.a = 0
 
     # ----- geometria de tela
     def _tela(self):
@@ -540,6 +650,8 @@ class OficinaIA(Widget):
         return self._rota[-1]
 
     def _desenha(self):
+        if self.so_rpm:
+            return
         esc, ox, oy = self._tela()
         profund = max(1.5, esc * 0.18)          # espessura de cada fatia (px)
         ang = self.angulos()
@@ -572,15 +684,16 @@ class OficinaIA(Widget):
         self._rpm += ((8000 if gera else 800) - self._rpm) * 0.08
         self._raiz += 0.10 if gera else 0.010
         self._s = (self._s + (1.6 if gera else 0.45)) % (self._cum[-1] + 18)
-        for fatias, cb, bisel, ch, cubo, cr, raios, cp, pino in self._eng:
-            for _k, c, _m in fatias:
-                c.a = self._a
-            for c in (cb, ch, cr, cp):
-                c.a = self._a
-        self._fio_c.a = self._a * 0.7
-        self._saida_c.a = self._a * (0.95 if self._s > self._cum[-1] - 6 else 0.45)
-        for (c, _ln), base in zip(self._brilho, (0.14, 0.30, 0.95)):
-            c.a = base * (1.0 if gera else 0.8)
+        if not self.so_rpm:
+            for fatias, cb, bisel, ch, cubo, cr, raios, cp, pino in self._eng:
+                for _k, c, _m in fatias:
+                    c.a = self._a
+                for c in (cb, ch, cr, cp):
+                    c.a = self._a
+            self._fio_c.a = self._a * 0.7
+            self._saida_c.a = self._a * (0.95 if self._s > self._cum[-1] - 6 else 0.45)
+            for (c, _ln), base in zip(self._brilho, (0.14, 0.30, 0.95)):
+                c.a = base * (1.0 if gera else 0.8)
         self._desenha()
         txt = "%d RPM" % (int(self._rpm) // 50 * 50)
         if txt != self.rpm_lb.text:
@@ -1555,9 +1668,19 @@ class TtokenApp(App):
 
     def _balao(self, texto, meu):
         g = Glass(border=alpha(CYAN if meu else VIOLET, 0.35))
+        g._texto = texto
         g.add_widget(tlabel(texto, 14, TEXT))
+        cp = Chip("COPIAR", height=30)
+        cp.bind(on_release=lambda w, b=g: self._copiar_balao(w, b))
+        g.add_widget(cp)
         self.chat_lista.add_widget(g)
         return g
+
+    def _copiar_balao(self, botao, balao):
+        """Copia o texto do balao do chat para a area de transferencia."""
+        Clipboard.copy(getattr(balao, "_texto", "") or "")
+        botao.text = "COPIADO"
+        Clock.schedule_once(lambda *_: setattr(botao, "text", "COPIAR"), 1.5)
 
     def _enviar_chat(self, *_):
         msg = (self.chat_inp.text or "").strip()
