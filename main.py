@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.14.2"
+VERSAO_APP = "1.15.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -483,6 +483,124 @@ class OficinaIA(Widget):
             self.rpm_lb.text = txt
 
 
+# ---------------------------------------------------------------- menu em arvore (Fibonacci)
+ANGULO_OURO = 137.5          # graus: angulo de ouro entre ramos consecutivos
+
+
+def posicoes_menu(raiz, n, w, h, passo, margem, base=20.0):
+    """Posicao dos n nos filhos: angulo = base + k*137.5 (so para cima, nunca abaixo da
+    raiz), raio crescendo em espiral de Fibonacci; cada no fica preso as margens da tela."""
+    pts = []
+    for k in range(n):
+        a = math.radians((base + k * ANGULO_OURO) % 360.0)
+        dx, dy = math.cos(a), abs(math.sin(a))
+        r = passo * (1.0 + 0.45 * k)
+        x = min(max(raiz[0] + dx * r, margem), w - margem)
+        y = min(max(raiz[1] + dy * r, margem), h - margem)
+        pts.append((x, y))
+    return pts
+
+
+class MenuArvore(Widget):
+    """Botao GERAR (raiz) flutuante. Tocar abre uma arvore neural: ramos de cobre/lava com
+    impulsos neon levam aos nos CONFIG, COFRE, INDICAR e MOTOR. Tocar de novo recolhe e
+    apaga as linhas. So pega o toque nos proprios nos; o resto do app segue normal."""
+    abre = NumericProperty(0.0)
+    NOS = (("CONFIG", "config"), ("COFRE", "cofre"), ("INDICAR", "indicar"), ("MOTOR", "motor"))
+
+    def __init__(self, acao, **kw):
+        super().__init__(**kw)
+        self.acao, self.gerando, self._t, self._aberto = acao, False, 0.0, False
+        self._rot = {}
+        self._ev = Clock.schedule_interval(self._tick, 1 / 20.0)
+        self.bind(pos=self._redesenha, size=self._redesenha, abre=self._redesenha)
+
+    def parar(self, sim):
+        if sim:
+            self._ev.cancel()
+        else:
+            self._ev.cancel()
+            self._ev = Clock.schedule_interval(self._tick, 1 / 20.0)
+
+    def _raiz(self):
+        return (self.width / 2.0, dp(46) + dp(26))
+
+    def _nos(self):
+        return posicoes_menu(self._raiz(), len(self.NOS), self.width, self.height,
+                             dp(88), dp(34))
+
+    def _tick(self, dt):
+        self._t += dt * (4.0 if self.gerando else 1.0)
+        self._redesenha()
+
+    def _redesenha(self, *_):
+        if not self.width or not self.height:
+            return
+        self.canvas.before.clear()
+        rx, ry = self._raiz()
+        raio = dp(26)
+        pulso = 0.5 + 0.5 * math.sin(self._t * 3.0)
+        with self.canvas.before:
+            nos = self._nos() if self.abre > 0.02 else []
+            for k, (nx, ny) in enumerate(nos):
+                f = self.abre
+                ex, ey = rx + (nx - rx) * f, ry + (ny - ry) * f
+                Color(*alpha(COBRE, 0.9))                       # ramo de cobre
+                Line(points=[rx, ry, ex, ey], width=dp(2.4))
+                Color(1.0, 0.45, 0.1, 0.55)                     # brilho de lava
+                Line(points=[rx, ry, ex, ey], width=dp(1.0))
+                u = (self._t * 0.7 + k * 0.27) % 1.0            # impulso neon que sobe e volta
+                u = u * 2 if u < 0.5 else (1 - u) * 2
+                Color(*alpha(CYAN, 0.95))
+                Ellipse(pos=(rx + (ex - rx) * u - dp(4), ry + (ey - ry) * u - dp(4)),
+                        size=(dp(8), dp(8)))
+                if f > 0.9:
+                    Color(*alpha(OURO, 1))
+                    Ellipse(pos=(nx - dp(20), ny - dp(20)), size=(dp(40), dp(40)))
+                    Color(*alpha(CYAN, 0.8))
+                    Line(circle=(nx, ny, dp(20)), width=dp(1.6))
+            Color(*alpha(CYAN, 0.18 + 0.25 * pulso))            # halo da raiz
+            Ellipse(pos=(rx - raio - dp(6), ry - raio - dp(6)), size=((raio + dp(6)) * 2,) * 2)
+            Color(*alpha(OURO, 1))
+            Ellipse(pos=(rx - raio, ry - raio), size=(raio * 2, raio * 2))
+            Color(*alpha(BRONZE, 1))
+            Line(circle=(rx, ry, raio), width=dp(2))
+        self._rotulos(rx, ry, nos)
+
+    def _rotulos(self, rx, ry, nos):
+        textos = [("GERAR", rx, ry)]
+        if self.abre > 0.9:
+            textos += [(self.NOS[k][0], nx, ny) for k, (nx, ny) in enumerate(nos)]
+        for nome in list(self._rot):
+            if nome not in [t[0] for t in textos]:
+                self.remove_widget(self._rot.pop(nome))
+        for nome, x, y in textos:
+            lb = self._rot.get(nome)
+            if lb is None:
+                lb = Label(text=nome, font_size=sp(9 if nome != "GERAR" else 10), bold=True,
+                           color=(0.05, 0.05, 0.08, 1), size_hint=(None, None),
+                           size=(dp(60), dp(20)))
+                self._rot[nome] = lb
+                self.add_widget(lb)
+            lb.center = (x, y)
+
+    def on_touch_down(self, touch):
+        rx, ry = self._raiz()
+        if math.dist(touch.pos, (rx, ry)) <= dp(30):
+            self._aberto = not self._aberto
+            Animation.cancel_all(self, "abre")
+            Animation(abre=1.0 if self._aberto else 0.0, d=0.35, t="out_quad").start(self)
+            return True
+        if self._aberto and self.abre > 0.9:
+            for (nome, chave), (nx, ny) in zip(self.NOS, self._nos()):
+                if math.dist(touch.pos, (nx, ny)) <= dp(24):
+                    self._aberto = False
+                    Animation(abre=0.0, d=0.25).start(self)
+                    self.acao(chave)
+                    return True
+        return False
+
+
 class NeonBar(Widget):
     """Barra de progresso com degrade; `frac` vai de 0 a 1."""
     frac = NumericProperty(0)
@@ -527,7 +645,7 @@ class TtokenApp(App):
         root.add_widget(self.oficina)
         scroll = ScrollView(do_scroll_x=False, bar_width=0, size_hint=(1, 1))
         col = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(16),
-                        padding=[dp(18), dp(30), dp(18), dp(30)])
+                        padding=[dp(18), dp(30), dp(18), dp(110)])
         col.bind(minimum_height=col.setter("height"))
 
         col.add_widget(tlabel("[b]TTOKEN[/b] [color=%s]STUDIO[/color]" % hexc(CYAN),
@@ -656,6 +774,9 @@ class TtokenApp(App):
                               "rede que quiser.", 11, MUTED, align="center"))
         scroll.add_widget(col)
         root.add_widget(scroll)
+        self.scroll = scroll
+        self.menu = MenuArvore(self._menu_acao, size_hint=(1, 1))    # arvore neural flutuante
+        root.add_widget(self.menu)
         self._carregar_chaves()
         return root
 
@@ -882,17 +1003,24 @@ class TtokenApp(App):
         of = getattr(self, "oficina", None)
         if of is not None:
             of.gerando = gerando
+        mn = getattr(self, "menu", None)
+        if mn is not None:
+            mn.gerando = gerando
 
     def on_pause(self):
         self._fundo = True
         if getattr(self, "oficina", None) is not None:
             self.oficina.ligar(False)
+        if getattr(self, "menu", None) is not None:
+            self.menu.parar(True)
         return True
 
     def on_resume(self):
         self._fundo = False
         if getattr(self, "oficina", None) is not None:
             self.oficina.ligar(True)
+        if getattr(self, "menu", None) is not None:
+            self.menu.parar(False)
         self._retomar()
 
     def on_start(self):
@@ -953,6 +1081,29 @@ class TtokenApp(App):
                               if self._eta else "passou %d:%02d" % (seg // 60, seg % 60))
 
     # ------------------------------------------------------------ abas
+    def _menu_acao(self, chave):
+        """Nos da arvore: levam para o que ja existe no app (nada foi removido)."""
+        try:
+            if chave == "config":
+                self._aba("video")
+                if not self.chaves_slot.children:
+                    self._alternar_chaves()
+                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.chaves_slot), 0.2)
+            elif chave == "indicar":
+                webbrowser.open(LINKS["magichour"])
+            elif chave == "cofre":
+                self._aba("video")
+                self.modo_lb.text = ("COFRE: moedas gratis que voce nao usa no dia ficam "
+                                     "guardadas (ate 30 dias) no servidor.")
+                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.modo_lb), 0.2)
+            elif chave == "motor":
+                self._aba("video")
+                self.modo_lb.text = ("MOTOR: o Maestro escolhe sozinho o gerador de video "
+                                     "disponivel e troca se um acabar o credito.")
+                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.modo_lb), 0.2)
+        except Exception as e:
+            self._aviso(str(e))
+
     def _aba(self, chave):
         for k, c in self.abas.items():
             c.active = (k == chave)
