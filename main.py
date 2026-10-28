@@ -26,6 +26,7 @@ from kivy.properties import BooleanProperty, NumericProperty
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
@@ -34,6 +35,7 @@ from kivy.utils import platform
 
 from maestro import Maestro          # motor embutido: funciona sem servidor
 from audio import SemTranscricao, transcrever
+import maestro_ttoken
 import selftest
 import trending
 from pipeline import produzir
@@ -52,7 +54,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.19.0"
+VERSAO_APP = "1.20.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -709,8 +711,8 @@ LAVA_AMARELO = (1.0, 0.85, 0.25, 1)
 # arvore genealogica das funcoes: (rotulo, chave, filhos). Nada foi removido do app:
 # cada folha leva a uma tela/funcao que ja existia.
 ARVORE_MENU = ("GERAR", "raiz", (
-    ("CRIAR", "criar", (("IDEIA", "ideia", ()), ("OPCOES", "opcoes", ()),
-                        ("IDIOMA", "idioma", ()))),
+    ("CRIAR", "criar", (("ESTUDIO", "estudio", ()), ("IDEIA", "ideia", ()),
+                        ("OPCOES", "opcoes", ()), ("IDIOMA", "idioma", ()))),
     ("CONVERSAR", "conversar", (
         ("CHAT", "chat", ()), ("CODIGO", "code", ()), ("MESTRE", "mestre", ()),
         ("COMANDOS", "comandos", tuple((c.upper(), "cmd:/" + c, ()) for c in (
@@ -1064,9 +1066,12 @@ class TtokenApp(App):
         self.p_trend = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
         self.p_trend.bind(minimum_height=self.p_trend.setter("height"))
         self.chat_hist = []
+        self.p_estudio = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(10))
+        self.p_estudio.bind(minimum_height=self.p_estudio.setter("height"))
         self._montar_trend()
         self._montar_chat()
         self._montar_code()
+        self._montar_estudio()
 
         # cartao de entrada
         entrada = Glass(border=alpha(CYAN, 0.45))
@@ -1490,6 +1495,8 @@ class TtokenApp(App):
             if chave in ("chat", "code", "trend"):
                 self._aba(chave)
                 self.scroll.scroll_y = 1
+            elif chave == "estudio":
+                self._abrir_estudio()
             elif chave in ("ideia", "opcoes", "idioma"):
                 self._ver((chave,) if chave != "ideia" else ("ideia",))
             elif chave == "chaves":
@@ -1537,12 +1544,220 @@ class TtokenApp(App):
                 self.p_video.add_widget(w)
         self.scroll.scroll_y = 1
 
+    # ------------------------------------------- estudio: Maestro Local -> Colab -> APIs
+    def _pasta_dados(self):
+        return getattr(self, "user_data_dir", None) or "."
+
+    def _campo(self, dica, texto="", senha=False):
+        return TextInput(text=texto, hint_text=dica, multiline=False, password=senha,
+                         size_hint_y=None, height=dp(42), font_size=sp(14),
+                         background_normal="", background_active="",
+                         background_color=(1, 1, 1, 0.07), foreground_color=TEXT,
+                         hint_text_color=alpha(MUTED, 0.7), cursor_color=CYAN,
+                         padding=[dp(10), dp(11)])
+
+    def _montar_estudio(self):
+        links = maestro_ttoken.carregar_links(self._pasta_dados())
+        # --- cadastro (primeira vez: cola o link do Colab; o do Python local e opcional)
+        self.est_cad = Glass(border=alpha(VIOLET, 0.5))
+        self.est_cad.add_widget(tlabel("CADASTRO DOS MOTORES (so na primeira vez)", 11, VIOLET,
+                                       bold=True))
+        self.est_cad.add_widget(tlabel(
+            "Cole o link que aparece no Colab (abra o notebook da pasta colab do projeto e rode). "
+            "O Python local (Pydroid 3) e opcional: use http://127.0.0.1:8000. Os links ficam "
+            "so neste celular (config_links.json).", 12, MUTED))
+        self.est_colab = self._campo("Link do Colab (https://....trycloudflare.com)", links["colab"])
+        self.est_local = self._campo("Link do Python local (opcional)", links["local"])
+        self.est_chave = self._campo("Chave (x-api-key)", links["chave"], senha=True)
+        for rot, campo in (("LINK DO COLAB", self.est_colab), ("PYTHON LOCAL (opcional)",
+                                                                 self.est_local),
+                           ("CHAVE", self.est_chave)):
+            self.est_cad.add_widget(tlabel(rot, 11, MUTED, bold=True))
+            self.est_cad.add_widget(campo)
+        col = Chip("COLAR LINK DO COLAB", height=38)
+        col.bind(on_release=lambda w: setattr(self.est_colab, "text", Clipboard.paste() or ""))
+        self.est_cad.add_widget(col)
+        sv = NeonButton("SALVAR LINKS", height=dp(46))
+        sv.bind(on_release=self._est_salvar_links)
+        self.est_cad.add_widget(sv)
+        self.est_edit = Chip("EDITAR LINKS", height=36)
+        self.est_edit.bind(on_release=self._est_mostrar_cadastro)
+        # --- chat do Maestro
+        self.est_chat = Glass(border=alpha(CYAN, 0.45))
+        self.est_chat.add_widget(tlabel("ESTUDIO: PYTHON LOCAL > COLAB > APIS GRATIS", 11, CYAN,
+                                        bold=True))
+        self.est_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(6))
+        self.est_lista.bind(minimum_height=self.est_lista.setter("height"))
+        self.est_chat.add_widget(self.est_lista)
+        self.est_inp = TextInput(hint_text="Descreva o video (ex: carro neon na chuva)...",
+                                 multiline=True, size_hint_y=None, height=dp(80),
+                                 font_size=sp(15), background_normal="", background_active="",
+                                 background_color=(0, 0, 0, 0), foreground_color=TEXT,
+                                 hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
+        self.est_chat.add_widget(self.est_inp)
+        self.est_btn = NeonButton("GERAR", height=dp(48))
+        self.est_btn.bind(on_release=self._est_gerar)
+        self.est_chat.add_widget(self.est_btn)
+        self.est_res = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
+        self.est_res.bind(minimum_height=self.est_res.setter("height"))
+        self.est_chat.add_widget(self.est_res)
+        self._est_resultado = None
+        self._est_msg("Ola! Escreva o que voce quer ver e toque em GERAR. Eu tento o Python "
+                      "local, depois o Colab (GPU) e por fim as APIs gratis.")
+
+    def _abrir_estudio(self):
+        self._aba("estudio")
+        self.p_estudio.clear_widgets()
+        links = maestro_ttoken.carregar_links(self._pasta_dados())
+        if not links["colab"] and not links["local"]:      # primeira vez: cadastro
+            self.p_estudio.add_widget(self.est_cad)
+        else:
+            self.p_estudio.add_widget(self.est_edit)
+        self.p_estudio.add_widget(self.est_chat)
+        self.scroll.scroll_y = 1
+
+    def _est_mostrar_cadastro(self, *_):
+        if self.est_cad.parent is None:
+            self.p_estudio.add_widget(self.est_cad, index=len(self.p_estudio.children))
+
+    def _est_salvar_links(self, *_):
+        try:
+            maestro_ttoken.salvar_links(self._pasta_dados(), self.est_colab.text,
+                                        self.est_local.text, self.est_chave.text)
+            self._est_msg("💾 Links salvos neste celular.")
+        except Exception as e:
+            self._est_msg("⚠️ Nao consegui salvar os links: %s" % str(e)[:60])
+            return
+        if self.est_cad.parent is not None:
+            self.p_estudio.remove_widget(self.est_cad)
+        if self.est_edit.parent is None:
+            self.p_estudio.add_widget(self.est_edit, index=len(self.p_estudio.children))
+
+    def _est_msg(self, texto):
+        """Linha do chat do Maestro (sempre na thread da tela)."""
+        g = Glass(border=alpha(VIOLET, 0.25))
+        g.add_widget(tlabel(str(texto), 13, TEXT))
+        self.est_lista.add_widget(g)
+        for velho in list(self.est_lista.children)[60:]:      # historico limitado
+            self.est_lista.remove_widget(velho)
+        return g
+
+    def _est_gerar(self, *_):
+        prompt = (self.est_inp.text or "").strip()
+        if len(prompt) < 3:
+            self._est_msg("✍️ Escreva a ideia do video (minimo 3 letras).")
+            return
+        links = maestro_ttoken.carregar_links(self._pasta_dados())
+        self.est_btn.disabled = True
+        self.est_btn.text = "GERANDO..."
+        self.est_res.clear_widgets()
+        self._motor(True)
+        self._est_msg("🎬 Pedido: " + prompt[:80])
+        self._est_maestro = maestro_ttoken.MaestroTtoken(
+            links["colab"], links["local"], links["chave"], pasta=self._pasta_dados(),
+            fallback_apis=self._est_apis)
+        self._est_maestro.gerar_em_thread(prompt, self._est_msg, self._est_fim, ui=self._ui)
+
+    def _est_apis(self, prompt, cb):
+        """3o degrau (roda na thread do Maestro): APIs gratis pelo mesmo caminho do app."""
+        if self._tem_chaves():                               # modo celular: suas chaves
+            res = {}
+
+            def report(**kw):
+                res.update(kw)
+                if kw.get("etapa"):
+                    cb("🔄 " + str(kw["etapa"]))
+            produzir(prompt, self.plataforma, self.llm, self.videos, report, tipo="normal",
+                     sem_video=False, idioma=self.idioma, modo_ttokem=self.economia)
+            if res.get("status") == "pronto" and res.get("video_url"):
+                self._dl = res.get("_dl")
+                return {"url": res["video_url"], "texto": res.get("texto", "")}
+            if res.get("erro"):
+                cb("⚠️ " + str(res["erro"])[:90])
+            return None
+        s = requests.Session()
+        s.headers.update({"User-Agent": UA, "Accept": "application/json"})
+        r = s.post(API + "/api/gerar", timeout=30,
+                   json={"ideia": prompt, "plataforma": self.plataforma, "tipo": "normal",
+                         "idioma": self.idioma, "economia": self.economia})
+        r.raise_for_status()
+        job, ultima, limite = r.json()["job_id"], "", time.time() + MAX_WAIT
+        while time.time() < limite:
+            time.sleep(POLL_EVERY)
+            st = s.get(API + "/api/status/" + job, timeout=20).json()
+            if st.get("status") == "pronto":
+                self._dl = None
+                return {"url": st.get("video_url", ""), "texto": st.get("texto", "")}
+            if st.get("status") != "processando":
+                cb("⚠️ " + str(st.get("erro", "erro desconhecido"))[:90])
+                return None
+            etapa = st.get("etapa", "")
+            if etapa and etapa != ultima:
+                ultima = etapa
+                cb("🔄 " + etapa)
+        cb("⏱️ Tempo esgotado nas APIs.")
+        return None
+
+    def _est_fim(self, res):
+        self.est_btn.disabled = False
+        self.est_btn.text = "GERAR"
+        self._motor(False)
+        self._est_resultado = res
+        if not res:
+            return
+        self._notificar("Seu video esta pronto!", "Abra o Ttoken Studio.")
+        self.est_res.clear_widgets()
+        if res.get("arquivo"):
+            self.est_res.add_widget(Image(source=res["arquivo"], size_hint_y=None,
+                                          height=dp(260), anim_delay=0.12, allow_stretch=True))
+            b = Chip("SALVAR NA GALERIA", height=40)
+            b.bind(on_release=self._est_salvar_arquivo)
+            self.est_res.add_widget(b)
+            c = Chip("COMPARTILHAR", height=40)
+            c.bind(on_release=self._est_compartilhar)
+            self.est_res.add_widget(c)
+        else:
+            self.video_url, self._shared, self.texto = res.get("url", ""), None, res.get("texto", "")
+            self.est_res.add_widget(tlabel("Video pronto (%s)." % res.get("origem", "apis"), 13,
+                                           CYAN))
+            b = Chip("SALVAR NA GALERIA", height=40)
+            b.bind(on_release=self._salvar_galeria)
+            self.est_res.add_widget(b)
+            a = Chip("ABRIR O VIDEO", height=40)
+            a.bind(on_release=lambda w: webbrowser.open(self.video_url))
+            self.est_res.add_widget(a)
+
+    def _est_salvar_arquivo(self, botao, *_):
+        arq = (self._est_resultado or {}).get("arquivo")
+        if not arq:
+            return
+        if platform != "android" or SharedStorage is None:
+            botao.text = "SALVO EM: " + os.path.basename(arq)
+            return
+        try:
+            env = autoclass("android.os.Environment")
+            SharedStorage().copy_to_shared(arq, collection=env.DIRECTORY_PICTURES)
+            botao.text = "SALVO NA GALERIA"
+        except Exception as e:
+            botao.text = "NAO SALVEI (%s)" % str(e)[:30]
+
+    def _est_compartilhar(self, *_):
+        arq = (self._est_resultado or {}).get("arquivo")
+        if not arq:
+            return
+        self._sheet = ShareSheet()
+        try:
+            self._sheet.share_file(arq)
+        except Exception as e:
+            self._est_msg("⚠️ Nao consegui abrir o compartilhamento: %s" % str(e)[:60])
+
     def _aba(self, chave):
         for k, c in self.abas.items():
             c.active = (k == chave)
         self.painel.clear_widgets()
         self.painel.add_widget({"video": self.p_video, "chat": self.p_chat,
-                                "code": self.p_code, "trend": self.p_trend}[chave])
+                                "code": self.p_code, "trend": self.p_trend,
+                                "estudio": self.p_estudio}[chave])
 
     # ------------------------------------------------ idioma (qualquer idioma)
     IDIOMAS = (("Portugues", "Português do Brasil"), ("English", "English"),
