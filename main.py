@@ -51,7 +51,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.15.0"
+VERSAO_APP = "1.16.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -485,120 +485,259 @@ class OficinaIA(Widget):
 
 # ---------------------------------------------------------------- menu em arvore (Fibonacci)
 ANGULO_OURO = 137.5          # graus: angulo de ouro entre ramos consecutivos
+LAVA_VERM = (0.95, 0.12, 0.08, 1)
+LAVA_LARANJA = (1.0, 0.45, 0.08, 1)
+LAVA_AMARELO = (1.0, 0.85, 0.25, 1)
+
+# arvore genealogica das funcoes: (rotulo, chave, filhos). Nada foi removido do app:
+# cada folha leva a uma tela/funcao que ja existia.
+ARVORE_MENU = ("GERAR", "raiz", (
+    ("CRIAR", "criar", (("IDEIA", "ideia", ()), ("OPCOES", "opcoes", ()),
+                        ("IDIOMA", "idioma", ()))),
+    ("CHAT", "chat", ()),
+    ("CODIGO", "code", ()),
+    ("TOP", "trend", ()),
+    ("AJUSTES", "ajustes", (("CHAVES", "chaves", ()), ("COFRE", "cofre", ()),
+                            ("MOTOR", "motor", ()), ("SISTEMA", "sistema", ()))),
+    ("INDICAR", "indicar", (("MAGIC HOUR", "l_magic", ()), ("SYNTX", "l_syntx", ()),
+                            ("GEMINI", "l_gemini", ()), ("MINIMAX", "l_minimax", ()))),
+))
 
 
-def posicoes_menu(raiz, n, w, h, passo, margem, base=20.0):
-    """Posicao dos n nos filhos: angulo = base + k*137.5 (so para cima, nunca abaixo da
-    raiz), raio crescendo em espiral de Fibonacci; cada no fica preso as margens da tela."""
+def posicoes_menu(raiz, n, w, h, passo, margem, base=20.0, cone=100.0, minimo=None,
+                  evitar=()):
+    """Posicao dos n filhos de um no. Angulo = direcao de saida (base) + espalhamento de
+    Fibonacci: (k*137.5 mod cone) dentro de um cone, raio crescendo em espiral. Cada no fica
+    preso as margens da tela (clamp) e e afastado dos vizinhos se encostar."""
+    minimo = minimo or max(passo * 0.62, 52.0)
     pts = []
     for k in range(n):
-        a = math.radians((base + k * ANGULO_OURO) % 360.0)
-        dx, dy = math.cos(a), abs(math.sin(a))
-        r = passo * (1.0 + 0.45 * k)
-        x = min(max(raiz[0] + dx * r, margem), w - margem)
-        y = min(max(raiz[1] + dy * r, margem), h - margem)
-        pts.append((x, y))
-    return pts
+        off = ((k * ANGULO_OURO + cone / 2.0) % cone) - cone / 2.0
+        a = math.radians(base + off)
+        r = passo * (1.0 + 0.3 * (k % 3))
+        x = min(max(raiz[0] + math.cos(a) * r, margem), w - margem)
+        y = min(max(raiz[1] + math.sin(a) * r, margem), h - margem)
+        pts.append([x, y])
+    for _ in range(60):                                  # afasta nos que se sobrepoem
+        mexeu = False
+        for i in range(n):                               # e dos nos que ja estao na tela
+            for o in evitar:
+                d = math.dist(pts[i], o)
+                if d < minimo:
+                    mexeu = True
+                    dx, dy = (pts[i][0] - o[0]) or 0.01, (pts[i][1] - o[1]) or 0.01
+                    f = (minimo - d) / (math.hypot(dx, dy) or 1.0)
+                    pts[i][0] = min(max(pts[i][0] + dx * f, margem), w - margem)
+                    pts[i][1] = min(max(pts[i][1] + dy * f, margem), h - margem)
+        for i in range(n):
+            for j in range(i + 1, n):
+                d = math.dist(pts[i], pts[j])
+                if d < minimo:
+                    mexeu = True
+                    dx, dy = (pts[j][0] - pts[i][0]) or 0.01, (pts[j][1] - pts[i][1]) or 0.01
+                    f = (minimo - d) / 2.0 / (math.hypot(dx, dy) or 1.0)
+                    for q, sg in ((i, -1), (j, 1)):
+                        pts[q][0] = min(max(pts[q][0] + sg * dx * f, margem), w - margem)
+                        pts[q][1] = min(max(pts[q][1] + sg * dy * f, margem), h - margem)
+        if not mexeu:
+            break
+    return [tuple(q) for q in pts]
+
+
+def raio_zigzag(a, b, semente, n=8, amp=0.07):
+    """Linha em zigue-zague (raio) de a ate b; muda a cada semente."""
+    import random
+    rnd = random.Random(semente)
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    L = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / L, dx / L
+    pts = [a[0], a[1]]
+    for i in range(1, n):
+        t = i / n
+        o = (rnd.random() - 0.5) * 2 * amp * L * math.sin(math.pi * t)
+        pts += [a[0] + dx * t + nx * o, a[1] + dy * t + ny * o]
+    return pts + [b[0], b[1]]
 
 
 class MenuArvore(Widget):
-    """Botao GERAR (raiz) flutuante. Tocar abre uma arvore neural: ramos de cobre/lava com
-    impulsos neon levam aos nos CONFIG, COFRE, INDICAR e MOTOR. Tocar de novo recolhe e
-    apaga as linhas. So pega o toque nos proprios nos; o resto do app segue normal."""
-    abre = NumericProperty(0.0)
-    NOS = (("CONFIG", "config"), ("COFRE", "cofre"), ("INDICAR", "indicar"), ("MOTOR", "motor"))
+    """Arvore hierarquica (genealogica) das funcoes do app. Botao raiz GERAR; ao tocar, os
+    ramos abrem como raios de lava/neon ate os filhos; tocar num filho abre os netos (um ramo
+    por vez); tocar numa folha executa a funcao. Linhas somem ao recolher. So pega o toque
+    nos proprios nos; o resto do app segue normal."""
 
     def __init__(self, acao, **kw):
         super().__init__(**kw)
-        self.acao, self.gerando, self._t, self._aberto = acao, False, 0.0, False
+        self.acao, self.gerando, self._t = acao, False, 0.0
         self._rot = {}
+        self._no = {}                       # caminho -> estado do no
+        self._abertos = set()               # caminhos expandidos (raiz = ())
         self._ev = Clock.schedule_interval(self._tick, 1 / 20.0)
-        self.bind(pos=self._redesenha, size=self._redesenha, abre=self._redesenha)
+        self.bind(pos=self._layout, size=self._layout)
 
     def parar(self, sim):
-        if sim:
-            self._ev.cancel()
-        else:
-            self._ev.cancel()
+        self._ev.cancel()
+        if not sim:
             self._ev = Clock.schedule_interval(self._tick, 1 / 20.0)
 
+    # ---- geometria
     def _raiz(self):
         return (self.width / 2.0, dp(46) + dp(26))
 
-    def _nos(self):
-        return posicoes_menu(self._raiz(), len(self.NOS), self.width, self.height,
-                             dp(88), dp(34))
+    def _dados(self, caminho):
+        no = ARVORE_MENU
+        for i in caminho:
+            no = no[2][i]
+        return no
 
-    def _tick(self, dt):
-        self._t += dt * (4.0 if self.gerando else 1.0)
-        self._redesenha()
-
-    def _redesenha(self, *_):
+    def _layout(self, *_):
+        """Calcula a posicao de todos os nos (so dos que estao abertos)."""
         if not self.width or not self.height:
             return
-        self.canvas.before.clear()
-        rx, ry = self._raiz()
-        raio = dp(26)
-        pulso = 0.5 + 0.5 * math.sin(self._t * 3.0)
-        with self.canvas.before:
-            nos = self._nos() if self.abre > 0.02 else []
-            for k, (nx, ny) in enumerate(nos):
-                f = self.abre
-                ex, ey = rx + (nx - rx) * f, ry + (ny - ry) * f
-                Color(*alpha(COBRE, 0.9))                       # ramo de cobre
-                Line(points=[rx, ry, ex, ey], width=dp(2.4))
-                Color(1.0, 0.45, 0.1, 0.55)                     # brilho de lava
-                Line(points=[rx, ry, ex, ey], width=dp(1.0))
-                u = (self._t * 0.7 + k * 0.27) % 1.0            # impulso neon que sobe e volta
-                u = u * 2 if u < 0.5 else (1 - u) * 2
-                Color(*alpha(CYAN, 0.95))
-                Ellipse(pos=(rx + (ex - rx) * u - dp(4), ry + (ey - ry) * u - dp(4)),
-                        size=(dp(8), dp(8)))
-                if f > 0.9:
-                    Color(*alpha(OURO, 1))
-                    Ellipse(pos=(nx - dp(20), ny - dp(20)), size=(dp(40), dp(40)))
-                    Color(*alpha(CYAN, 0.8))
-                    Line(circle=(nx, ny, dp(20)), width=dp(1.6))
-            Color(*alpha(CYAN, 0.18 + 0.25 * pulso))            # halo da raiz
-            Ellipse(pos=(rx - raio - dp(6), ry - raio - dp(6)), size=((raio + dp(6)) * 2,) * 2)
-            Color(*alpha(OURO, 1))
-            Ellipse(pos=(rx - raio, ry - raio), size=(raio * 2, raio * 2))
-            Color(*alpha(BRONZE, 1))
-            Line(circle=(rx, ry, raio), width=dp(2))
-        self._rotulos(rx, ry, nos)
+        pos = {(): self._raiz()}
+        orig = {(): math.pi / 2}
+        ordem = [()]
+        while ordem:
+            cam = ordem.pop(0)
+            if cam not in self._abertos:
+                continue
+            filhos = self._dados(cam)[2]
+            pai = pos[cam]
+            base = math.degrees(orig[cam])
+            cone = 170.0 if not cam else 150.0
+            passo = max(dp(98), self.height * 0.27) if not cam else max(dp(78), self.height * 0.21)
+            if cam:                                       # netos sobem em direcao ao centro
+                base = (base + 90.0) / 2.0
+            pts = posicoes_menu(pai, len(filhos), self.width, self.height, passo, dp(34),
+                                base=base, cone=cone, minimo=dp(54),
+                                evitar=[v for k_, v in pos.items() if k_ != cam])
+            for k, (x, y) in enumerate(pts):
+                c = cam + (k,)
+                pos[c] = (x, y)
+                orig[c] = math.atan2(y - pai[1], x - pai[0])
+                ordem.append(c)
+        self._pos = pos
+        for c in pos:
+            self._no.setdefault(c, {"p": 0.0})
+        for c, st in self._no.items():
+            st["alvo"] = 1.0 if (c in pos and (len(c) == 0 or c[:-1] in self._abertos)) else 0.0
 
-    def _rotulos(self, rx, ry, nos):
-        textos = [("GERAR", rx, ry)]
-        if self.abre > 0.9:
-            textos += [(self.NOS[k][0], nx, ny) for k, (nx, ny) in enumerate(nos)]
-        for nome in list(self._rot):
-            if nome not in [t[0] for t in textos]:
-                self.remove_widget(self._rot.pop(nome))
-        for nome, x, y in textos:
-            lb = self._rot.get(nome)
+    # ---- animacao
+    def _tick(self, dt):
+        self._t += dt * (4.0 if self.gerando else 1.0)
+        if not hasattr(self, "_pos"):
+            self._layout()
+        for st in self._no.values():
+            alvo = st.get("alvo", 0.0)
+            if st["p"] < alvo:
+                st["p"] = min(alvo, st["p"] + dt * 3.2)
+            elif st["p"] > alvo:
+                st["p"] = max(alvo, st["p"] - dt * 4.0)
+        self._desenha()
+
+    def _desenha(self):
+        if not self.width or not getattr(self, "_pos", None):
+            return
+        self.canvas.before.clear()
+        pulso = 0.5 + 0.5 * math.sin(self._t * 3.0)
+        rotulos = []
+        quad = int(self._t * 14)
+        with self.canvas.before:
+            vis = sorted((c for c, st in self._no.items() if st["p"] > 0.02 and c in self._pos),
+                         key=len)
+            for c in vis:                                     # 1) ramos (raios + lava)
+                if not c:
+                    continue
+                st, a, b = self._no[c], self._pos[c[:-1]], self._pos[c]
+                f = st["p"]
+                e = (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+                cx, cy = (a[0] + e[0]) / 2, (a[1] + e[1]) / 2
+                curva = dp(18) * (1 if (c[-1] % 2) else -1)
+                Color(*alpha(COBRE, 0.9))                     # ramo organico (bezier)
+                Line(bezier=[a[0], a[1], cx + curva, cy, cx - curva, cy, e[0], e[1]],
+                     width=dp(2.4))
+                Color(*alpha(LAVA_LARANJA, 0.5))
+                Line(bezier=[a[0], a[1], cx + curva, cy, cx - curva, cy, e[0], e[1]],
+                     width=dp(1.0))
+                z = raio_zigzag(a, e, quad * 131 + hash(c) % 997)
+                Color(*alpha(CYAN, 0.35))                     # raio neon (brilho)
+                Line(points=z, width=dp(3.4))
+                Color(0.75, 1.0, 0.98, 0.95)
+                Line(points=z, width=dp(1.1))
+            for c in vis:                                     # 2) nos
+                x, y = self._pos[c]
+                st = self._no[c]
+                f = st["p"]
+                filhos = self._dados(c)[2]
+                raiz = not c
+                r = dp(26 if raiz else 20) * (0.4 + 0.6 * f)
+                aberto = c in self._abertos
+                Color(*alpha(LAVA_VERM, (0.20 + 0.18 * pulso) * f))      # aura vermelha
+                Ellipse(pos=(x - r * 1.7, y - r * 1.7), size=(r * 3.4, r * 3.4))
+                Color(0.03, 0.03, 0.05, 1)                                 # corpo escuro
+                Ellipse(pos=(x - r, y - r), size=(r * 2, r * 2))
+                Color(*alpha(LAVA_LARANJA, 0.95))                          # brilho laranja
+                Line(circle=(x, y, r), width=dp(2.6))
+                Color(*alpha(LAVA_AMARELO, 0.95 if (aberto or raiz) else 0.7))   # nucleo amarelo
+                Line(circle=(x, y, r * 0.72), width=dp(1.1))
+                if filhos:
+                    Color(*alpha(CYAN, 0.8))
+                    Ellipse(pos=(x - dp(2.5), y + r * 0.35), size=(dp(5), dp(5)))
+                if f > 0.8:
+                    rotulos.append((self._dados(c)[0], x, y, raiz))
+        self._rotulos(rotulos)
+
+    def _rotulos(self, lista):
+        nomes = {t[0] + str(int(t[1])) + str(int(t[2])) for t in lista}
+        for k in list(self._rot):
+            if k not in nomes:
+                self.remove_widget(self._rot.pop(k))
+        for nome, x, y, raiz in lista:
+            k = nome + str(int(x)) + str(int(y))
+            lb = self._rot.get(k)
             if lb is None:
-                lb = Label(text=nome, font_size=sp(9 if nome != "GERAR" else 10), bold=True,
-                           color=(0.05, 0.05, 0.08, 1), size_hint=(None, None),
-                           size=(dp(60), dp(20)))
-                self._rot[nome] = lb
+                lb = Label(text=nome, font_size=sp(9 if len(nome) < 7 else 8), bold=True,
+                           color=(1.0, 0.93, 0.7, 1), size_hint=(None, None),
+                           size=(dp(70), dp(16)))
+                self._rot[k] = lb
                 self.add_widget(lb)
             lb.center = (x, y)
 
+    # ---- toque
     def on_touch_down(self, touch):
-        rx, ry = self._raiz()
-        if math.dist(touch.pos, (rx, ry)) <= dp(30):
-            self._aberto = not self._aberto
-            Animation.cancel_all(self, "abre")
-            Animation(abre=1.0 if self._aberto else 0.0, d=0.35, t="out_quad").start(self)
-            return True
-        if self._aberto and self.abre > 0.9:
-            for (nome, chave), (nx, ny) in zip(self.NOS, self._nos()):
-                if math.dist(touch.pos, (nx, ny)) <= dp(24):
-                    self._aberto = False
-                    Animation(abre=0.0, d=0.25).start(self)
-                    self.acao(chave)
-                    return True
+        if not getattr(self, "_pos", None):
+            self._layout()
+        for c, (x, y) in self._pos.items():
+            st = self._no.get(c)
+            if st is None or st["p"] < 0.9:
+                continue
+            if math.dist(touch.pos, (x, y)) <= dp(30 if not c else 24):
+                self._toque(c)
+                return True
         return False
+
+    def _toque(self, c):
+        no = self._dados(c)
+        if no[2]:                                            # tem filhos: abre/fecha o ramo
+            if c in self._abertos:
+                self._fecha(c)
+            else:
+                for o in list(self._abertos):               # um ramo por vez entre irmaos
+                    if len(o) == len(c) and o[:-1] == c[:-1] and o != c:
+                        self._fecha(o)
+                self._abertos.add(c)
+            self._layout()
+            return
+        self.recolher()                                       # folha: executa e recolhe
+        self.acao(no[1])
+
+    def _fecha(self, c):
+        for o in list(self._abertos):
+            if o[:len(c)] == c:
+                self._abertos.discard(o)
+
+    def recolher(self):
+        self._abertos.clear()
+        self._layout()
 
 
 class NeonBar(Widget):
@@ -664,6 +803,7 @@ class TtokenApp(App):
             self.abas[chave] = c
             abas.add_widget(c)
         col.add_widget(abas)
+        abas.height, abas.opacity, abas.disabled = 0, 0, True     # funcoes agora na arvore
         self.painel = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(16))
         self.painel.bind(minimum_height=self.painel.setter("height"))
         col.add_widget(self.painel)
@@ -746,7 +886,7 @@ class TtokenApp(App):
                              "arquivo no botao acima.) Depois: ideia, GERAR e postar.", 12, MUTED)
         opc.add_widget(self.opc_lb)
         self.p_video.add_widget(opc)
-        self._montar_idioma()
+        g_idioma = self._montar_idioma()
 
         self.btn = NeonButton("GERAR VIDEO + LEGENDA")
         self.btn.bind(on_release=self.iniciar)
@@ -768,6 +908,11 @@ class TtokenApp(App):
         self.slot = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(14))
         self.slot.bind(minimum_height=self.slot.setter("height"))
         self.p_video.add_widget(self.slot)
+        self._video_ordem = [entrada, opc, g_idioma, self.btn, self.modo_lb, chip_chaves,
+                             self.chaves_slot, self.slot]
+        self.secoes = {"ideia": [entrada, self.btn, self.modo_lb, self.slot],
+                       "opcoes": [opc], "idioma": [g_idioma],
+                       "chaves": [chip_chaves, self.chaves_slot]}
         self.painel.add_widget(self.p_video)
 
         col.add_widget(tlabel("O app nunca posta sozinho: voce confere e toca em postar na "
@@ -777,6 +922,7 @@ class TtokenApp(App):
         self.scroll = scroll
         self.menu = MenuArvore(self._menu_acao, size_hint=(1, 1))    # arvore neural flutuante
         root.add_widget(self.menu)
+        self._ver(("ideia",))
         self._carregar_chaves()
         return root
 
@@ -1082,27 +1228,45 @@ class TtokenApp(App):
 
     # ------------------------------------------------------------ abas
     def _menu_acao(self, chave):
-        """Nos da arvore: levam para o que ja existe no app (nada foi removido)."""
+        """Folhas da arvore: levam ao que ja existe no app (nada foi removido)."""
         try:
-            if chave == "config":
-                self._aba("video")
+            if chave in ("chat", "code", "trend"):
+                self._aba(chave)
+                self.scroll.scroll_y = 1
+            elif chave in ("ideia", "opcoes", "idioma"):
+                self._ver((chave,) if chave != "ideia" else ("ideia",))
+            elif chave == "chaves":
+                self._ver(("chaves",))
                 if not self.chaves_slot.children:
                     self._alternar_chaves()
-                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.chaves_slot), 0.2)
-            elif chave == "indicar":
-                webbrowser.open(LINKS["magichour"])
-            elif chave == "cofre":
-                self._aba("video")
-                self.modo_lb.text = ("COFRE: moedas gratis que voce nao usa no dia ficam "
-                                     "guardadas (ate 30 dias) no servidor.")
-                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.modo_lb), 0.2)
-            elif chave == "motor":
-                self._aba("video")
-                self.modo_lb.text = ("MOTOR: o Maestro escolhe sozinho o gerador de video "
-                                     "disponivel e troca se um acabar o credito.")
-                Clock.schedule_once(lambda *_: self.scroll.scroll_to(self.modo_lb), 0.2)
+            elif chave in ("cofre", "motor"):
+                self._ver(("ideia",))
+                self.modo_lb.text = (
+                    "COFRE: moedas gratis que voce nao usa no dia ficam guardadas no servidor."
+                    if chave == "cofre" else
+                    "MOTOR: o Maestro escolhe sozinho o gerador de video disponivel e troca "
+                    "se um acabar o credito.")
+            elif chave == "sistema":
+                webbrowser.open(API.rstrip("/") + "/sistema")
+            elif chave.startswith("l_"):
+                webbrowser.open({"l_magic": LINKS["magichour"],
+                                 "l_syntx": "https://syntx.ai",
+                                 "l_gemini": "https://gemini.google.com/app",
+                                 "l_minimax": "https://hailuoai.video"}[chave])
         except Exception as e:
             self._aviso(str(e))
+
+    def _ver(self, nomes):
+        """Mostra so as secoes escolhidas da tela de video (as demais ficam guardadas)."""
+        self._aba("video")
+        vis = set()
+        for n in nomes:
+            vis.update(id(w) for w in self.secoes[n])
+        self.p_video.clear_widgets()
+        for w in self._video_ordem:
+            if id(w) in vis:
+                self.p_video.add_widget(w)
+        self.scroll.scroll_y = 1
 
     def _aba(self, chave):
         for k, c in self.abas.items():
@@ -1146,6 +1310,7 @@ class TtokenApp(App):
                             focus=lambda w, f: None if f else self._definir_idioma(w.text))
         g.add_widget(self.idioma_ti)
         self.p_video.add_widget(g)
+        return g
 
     def _definir_idioma(self, valor):
         valor = (valor or "").strip() or "Português do Brasil"
