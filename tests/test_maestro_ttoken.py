@@ -143,10 +143,31 @@ class TestCascata(unittest.TestCase):
         self.assertEqual(chamadas, ["dragao sobre o castelo"])
         self.assertTrue(any("recusou a chave" in m for m in self.msgs))
 
+    def test_tudo_falha_cai_no_motor_matematico(self):
+        r = self.maestro().gerar_video("raposa na neve", self.msgs.append)
+        self.assertEqual(r["origem"], "matematico")
+        self.assertTrue(r["arquivo"].endswith(".gif") and os.path.exists(r["arquivo"]))
+        self.assertTrue(os.path.exists(r["imagem"]) and r["imagem"].endswith(".png"))
+        self.assertEqual(Image.open(r["imagem"]).size, (256, 256))
+
+    def test_motor_matematico_deterministico_e_png_valido(self):
+        import motor_matematico as mm
+        a, b = mm.gerar_bytes("mar azul", 64), mm.gerar_bytes("mar azul", 64)
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, mm.gerar_bytes("fogo", 64))
+        self.assertEqual(a[:8], b"\x89PNG\r\n\x1a\n")
+
     def test_tudo_falha(self):
-        r = self.maestro(link_colab=porta_fechada()).gerar_video("qualquer coisa", self.msgs.append)
+        import motor_matematico
+        antes = motor_matematico.gerar
+        motor_matematico.gerar = lambda *a, **k: (_ for _ in ()).throw(OSError("disco cheio"))
+        try:
+            r = self.maestro(link_colab=porta_fechada()).gerar_video("qualquer coisa",
+                                                                       self.msgs.append)
+        finally:
+            motor_matematico.gerar = antes
         self.assertIsNone(r)
-        self.assertIn("❌ Todas as tentativas falharam.", self.msgs)
+        self.assertTrue(any("Todas as tentativas falharam" in m for m in self.msgs))
 
     def test_servidor_sem_modelo_e_offline(self):
         class Sem(sl.MotorLocal):
@@ -157,7 +178,7 @@ class TestCascata(unittest.TestCase):
             r = self.maestro(link_python_local=srv.url).gerar_video("teste de offline", self.msgs.append)
         finally:
             srv.fechar()
-        self.assertIsNone(r)
+        self.assertEqual(r["origem"], "matematico")      # servidor offline -> motor matematico
         self.assertTrue(any("offline" in m for m in self.msgs))
 
     def test_prompt_vazio_nao_chama_nada(self):
@@ -174,7 +195,7 @@ class TestCascata(unittest.TestCase):
         m.gerar_em_thread("ideia qualquer", self.msgs.append,
                           lambda r: (res.append(r), fim.set()), ui=agenda)
         self.assertTrue(fim.wait(10))
-        self.assertEqual(res, [None])
+        self.assertEqual(res[0]["origem"], "matematico")   # APIs falharam, nao morreu
         self.assertTrue(any("APIs gratuitas falharam" in x for x in self.msgs))
 
     def test_resposta_mp4_base64_e_url(self):

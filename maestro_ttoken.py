@@ -195,8 +195,20 @@ class MaestroTtoken:
                 callback_chat("✅ Video gerado pelas APIs gratuitas!")
                 self.ultimo = res
                 return res
-        callback_chat("❌ Todas as tentativas falharam.")
-        return None
+        # ultimo recurso: arte matematica em Python puro (nunca falha, offline) + movimento
+        try:
+            import motor_matematico
+            callback_chat("🧮 Gerando com o motor matematico (Python puro, offline)...")
+            png = motor_matematico.gerar(
+                prompt, os.path.join(self.pasta, "ttoken_%s.png" % time.strftime("%Y%m%d_%H%M%S")))
+            res = self.animar_imagem({"arquivo": png, "url": ""}, prompt, callback_chat)
+            res["origem"] = "matematico"
+            callback_chat("✅ Pronto pelo motor matematico (arte generativa, nao e IA de imagem).")
+            self.ultimo = res
+            return res
+        except Exception as e:
+            callback_chat("❌ Todas as tentativas falharam (%s)." % str(e)[:50])
+            return None
 
     def gerar_em_thread(self, prompt, callback_chat, ao_terminar, ui=None):
         """Roda a cascata em outra thread. `ui(f, *args)` agenda na thread da tela (no app:
