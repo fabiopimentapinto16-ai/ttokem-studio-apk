@@ -144,6 +144,7 @@ def criar_app(motor, chave=CHAVE):
             raise HTTPException(status_code=401, detail="chave invalida")
 
     @app.get("/saude")
+    @app.get("/status")                           # apelido: maestros de outras versoes usam /status
     def saude():                                  # sem chave: o app so testa se esta no ar
         return {"status": "online", "modelo": MODELO, "ultimos_ssim": motor.historico[-5:]}
 
@@ -156,6 +157,13 @@ def criar_app(motor, chave=CHAVE):
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=500, detail="falha ao gerar: %s" % str(e)[:200])
+
+    @app.post("/api/gerar_video")                 # apelido compativel: devolve tambem gif_base64
+    def gerar_video(req: Pedido, x_api_key: str = Header(None)):
+        res = gerar(req, x_api_key)
+        res = dict(res)
+        res["gif_base64"] = res.get("gif", "")
+        return res
 
     return app
 
