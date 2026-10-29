@@ -199,6 +199,21 @@ def abrir_tunel(porta=PORTA):
     raise RuntimeError("o tunel nao abriu em 60 s")
 
 
+def autoteste():
+    """Gera um video de teste pela propria rota /gerar e imprime o resultado. Assim voce nao
+    precisa montar nenhuma celula de teste: so copiar o que aparecer e me mandar."""
+    try:
+        import requests
+        t0 = time.time()
+        r = requests.post("http://127.0.0.1:%d/gerar" % PORTA, json={"prompt": "um gato astronauta"},
+                          headers={"x-api-key": CHAVE}, timeout=300)
+        d = r.json() if r.status_code == 200 else {}
+        resumo = {k: v for k, v in d.items() if len(str(v)) < 80}
+        print("AUTOTESTE: HTTP %d em %.1f s | %s" % (r.status_code, time.time() - t0, resumo))
+    except Exception as e:
+        print("AUTOTESTE falhou: %s: %s" % (type(e).__name__, str(e)[:200]))
+
+
 def principal():
     _garantir([("diffusers", "diffusers"), ("transformers", "transformers"),
                ("accelerate", "accelerate"), ("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
@@ -211,6 +226,7 @@ def principal():
     servidor = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=PORTA, log_level="warning"))
     threading.Thread(target=servidor.run, daemon=True).start()
     time.sleep(2)
+    autoteste()
     url = abrir_tunel(PORTA)
     print("\n" + "=" * 60)
     print("PRONTO. Cole isto no app (CRIAR > ESTUDIO > Link do Colab):")

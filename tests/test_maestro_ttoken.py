@@ -226,5 +226,43 @@ class TestServidores(unittest.TestCase):
         self.assertEqual(c.post("/gerar", json={"prompt": "a"}, headers={"x-api-key": "k"}).status_code, 400)
 
 
+class TestAnimador(unittest.TestCase):
+    def setUp(self):
+        self.pasta = tempfile.mkdtemp()
+        self.png = os.path.join(self.pasta, "ttoken_x.png")
+        im = Image.new("RGB", (400, 300), (10, 20, 30))
+        for x in range(0, 400, 40):
+            for y in range(300):
+                im.putpixel((x, y), (250, 120, 0))
+        im.save(self.png)
+
+    def test_todos_os_estilos_geram_gif_com_movimento(self):
+        import animador
+        from PIL import ImageChops
+        for est in animador.ESTILOS:
+            out = animador.animar(self.png, os.path.join(self.pasta, est + ".gif"),
+                                  duracao=2, fps=6, lado=160, estilo=est)
+            g = Image.open(out)
+            self.assertEqual((g.format, g.n_frames, g.size), ("GIF", 12, (160, 160)))
+            g.seek(0); a = g.convert("RGB").copy(); g.seek(11); b = g.convert("RGB").copy()
+            self.assertIsNotNone(ImageChops.difference(a, b).getbbox(), est)
+
+    def test_imagem_invalida_e_estilo_repetivel(self):
+        import animador
+        with self.assertRaises(ValueError):
+            animador.animar(b"nao e imagem", os.path.join(self.pasta, "z.gif"))
+        self.assertEqual(animador.escolher_estilo("abc"), animador.escolher_estilo("abc"))
+
+    def test_maestro_anima_quando_servidor_devolve_so_png(self):
+        m = mt.MaestroTtoken(pasta=self.pasta)
+        msgs = []
+        r = m.animar_imagem({"arquivo": self.png, "url": ""}, "gato", msgs.append)
+        self.assertTrue(r["arquivo"].endswith(".gif") and os.path.exists(r["arquivo"]))
+        self.assertEqual(r["imagem"], self.png)
+        gif = {"arquivo": r["arquivo"]}                   # gif/mp4 passam sem mexer
+        self.assertIs(m.animar_imagem(gif, "gato", msgs.append), gif)
+        self.assertEqual(m.animar_imagem(None), None)
+
+
 if __name__ == "__main__":
     unittest.main()

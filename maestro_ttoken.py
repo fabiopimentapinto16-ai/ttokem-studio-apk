@@ -140,6 +140,26 @@ class MaestroTtoken:
             avisar("⚠️ %s respondeu sem video." % nome)
         return res
 
+    def animar_imagem(self, res, prompt="", callback_chat=None):
+        """Se o servidor devolveu so uma IMAGEM (png), da movimento de camera a ela aqui
+        mesmo (animador.py: Pillow, offline). Se nao der, devolve o resultado como veio."""
+        arq = (res or {}).get("arquivo") or ""
+        if not arq.lower().endswith(".png"):
+            return res
+        try:
+            import animador
+            saida = arq[:-4] + ".gif"
+            animador.animar(arq, saida, semente=prompt)
+        except Exception as e:                          # sem Pillow etc.: segue com a imagem
+            if callback_chat:
+                callback_chat("⚠️ Nao consegui animar a imagem (%s)." % str(e)[:60])
+            return res
+        if callback_chat:
+            callback_chat("🎞️ Imagem animada no celular (zoom/pan).")
+        novo = dict(res)
+        novo["arquivo"], novo["imagem"] = saida, arq
+        return novo
+
     # --- cascata
     def gerar_video(self, prompt, callback_chat):
         """Tenta Local -> Colab -> APIs. Bloqueante: chame em thread (use gerar_em_thread)."""
@@ -155,6 +175,7 @@ class MaestroTtoken:
             callback_chat("%s Tentando gerar no %s..." % (icone, nome))
             res = self._tentar(base, prompt, tempo, callback_chat, nome)
             if res:
+                res = self.animar_imagem(res, prompt, callback_chat)
                 res["origem"] = chave
                 callback_chat("✅ Video gerado no %s!" % nome)
                 self.ultimo = res

@@ -54,7 +54,7 @@ if platform == "android":
     except Exception:
         pedir_permissao = Permission = None
 
-VERSAO_APP = "1.21.0"
+VERSAO_APP = "1.22.0"
 API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
 POLL_EVERY = 4          # segundos entre consultas
 MAX_WAIT = 1200          # desiste depois de 8 minutos
@@ -1613,6 +1613,9 @@ class TtokenApp(App):
         self.est_btn = NeonButton("GERAR", height=dp(48))
         self.est_btn.bind(on_release=self._est_gerar)
         self.est_chat.add_widget(self.est_btn)
+        anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
+        anim.bind(on_release=lambda w: self._est_pegar_foto_animar())
+        self.est_chat.add_widget(anim)
         self.est_res = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
         self.est_res.bind(minimum_height=self.est_res.setter("height"))
         self.est_chat.add_widget(self.est_res)
@@ -1740,6 +1743,25 @@ class TtokenApp(App):
             links["colab"], links["local"], links["chave"], pasta=self._pasta_dados(),
             fallback_apis=self._est_apis)
         self._est_maestro.gerar_em_thread(prompt, self._est_msg, self._est_fim, ui=self._ui)
+
+    def _est_pegar_foto_animar(self):
+        if platform != "android" or Chooser is None:
+            self._est_msg("📷 Escolher foto so funciona no Android.")
+            return
+        self._chooser2 = Chooser(lambda uris: self._arquivo_pego(uris, "animar"))
+        self._chooser2.choose_content("image/*")
+
+    def _est_animar_foto(self, caminho):
+        """Roda em thread: foto -> GIF com zoom/pan (animador.py), tudo no celular."""
+        self._ui(self._est_msg, "🎞️ Animando a sua foto no celular...")
+        try:
+            import animador
+            saida = os.path.join(self._pasta_dados(), "ttoken_foto_%s.gif" %
+                                 time.strftime("%Y%m%d_%H%M%S"))
+            animador.animar(caminho, saida, semente=os.path.basename(caminho))
+            self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
+        except Exception as e:
+            self._ui(self._est_msg, "⚠️ Nao consegui animar: %s" % str(e)[:80])
 
     def _est_apis(self, prompt, cb):
         """3o degrau (roda na thread do Maestro): APIs gratis pelo mesmo caminho do app."""
@@ -2217,6 +2239,8 @@ class TtokenApp(App):
             return
         if destino == "foto":
             threading.Thread(target=self._preparar_foto, args=(caminho,), daemon=True).start()
+        elif destino == "animar":
+            threading.Thread(target=self._est_animar_foto, args=(caminho,), daemon=True).start()
         else:
             self._ui(self._definir_meu_video, caminho)
 
