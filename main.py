@@ -1621,10 +1621,17 @@ class TtokenApp(App):
                       "local, depois o Colab (GPU) e por fim as APIs gratis.")
 
     def _abrir_site(self, rota):
-        """SISTEMA/PAINEL: primeiro LIGA o servidor (o SnapDeploy dorme quando ocioso) e so
-        depois abre o site, para nao cair numa pagina de erro."""
+        """SISTEMA/PAINEL: abre o site NA HORA (o navegador mostra a pagina assim que o
+        servidor acordar) e, em segundo plano, cutuca /health para acordar o SnapDeploy."""
         self._ver(("ideia",))
-        self.modo_lb.text = "Ligando o servidor (pode levar ate 1 minuto)..."
+        url = API.rstrip("/") + "/" + rota
+        try:
+            webbrowser.open(url)
+            self.modo_lb.text = "Abrindo %s ... se demorar, o servidor esta acordando." % rota
+        except Exception as e:
+            Clipboard.copy(url)
+            self.modo_lb.text = "Nao consegui abrir o navegador. Link copiado: " + url
+            self._aviso(str(e))
 
         def trabalho():
             ok, s = False, requests.Session()
@@ -1640,9 +1647,8 @@ class TtokenApp(App):
         threading.Thread(target=trabalho, daemon=True).start()
 
     def _site_pronto(self, rota, ok):
-        self.modo_lb.text = ("Servidor ligado." if ok else
-                             "O servidor nao respondeu; abrindo mesmo assim.")
-        webbrowser.open(API.rstrip("/") + "/" + rota)
+        self.modo_lb.text = ("Servidor ligado. Se a pagina deu erro, recarregue." if ok else
+                             "O servidor ainda nao respondeu; tente de novo em 1 minuto.")
 
     def _ligar_local(self):
         """MOTOR: liga/desliga o servidor Python local (127.0.0.1:8000) dentro do app e
