@@ -73,13 +73,14 @@ def salvar_links(pasta, colab="", local="", chave=""):
 # ------------------------------------------------------------------ o Maestro
 class MaestroTtoken:
     def __init__(self, link_colab="", link_python_local="", chave_api=CHAVE_PADRAO,
-                 pasta=None, fallback_apis=None, http=None):
+                 pasta=None, fallback_apis=None, http=None, offline=False):
         self.link_colab = normalizar_link(link_colab)
         self.link_python_local = normalizar_link(link_python_local, local=True)
         self.chave_api = chave_api or CHAVE_PADRAO
         self.pasta = pasta or "."
         self.fallback_apis = fallback_apis       # f(prompt, callback_chat) -> dict | None
         self.http = http or requests
+        self.offline = bool(offline)       # True: nada de rede; so o motor matematico (Python puro)
         self.ultimo = {}
 
     # --- utilidades
@@ -169,6 +170,9 @@ class MaestroTtoken:
             return None
         etapas = (("local", self.link_python_local, TEMPO_LOCAL, "⚙️", "Python local"),
                   ("colab", self.link_colab, TEMPO_COLAB, "☁️", "Colab (GPU)"))
+        if self.offline:
+            etapas = ()
+            callback_chat("📴 Modo offline: tudo em Python puro, sem internet.")
         for chave, base, tempo, icone, nome in etapas:
             if not base:
                 continue
@@ -180,8 +184,9 @@ class MaestroTtoken:
                 callback_chat("✅ Video gerado no %s!" % nome)
                 self.ultimo = res
                 return res
-        callback_chat("🔄 Tentando APIs gratuitas...")
-        if self.fallback_apis:
+        if not self.offline:
+            callback_chat("🔄 Tentando APIs gratuitas...")
+        if self.fallback_apis and not self.offline:
             try:
                 res = self.fallback_apis(prompt, callback_chat)
             except Exception as e:
@@ -199,10 +204,10 @@ class MaestroTtoken:
         try:
             import motor_matematico
             callback_chat("🧮 Gerando com o motor matematico (Python puro, offline)...")
-            png = motor_matematico.gerar(
-                prompt, os.path.join(self.pasta, "ttoken_%s.png" % time.strftime("%Y%m%d_%H%M%S")))
-            res = self.animar_imagem({"arquivo": png, "url": ""}, prompt, callback_chat)
-            res["origem"] = "matematico"
+            base = os.path.join(self.pasta, "ttoken_%s" % time.strftime("%Y%m%d_%H%M%S"))
+            png = motor_matematico.gerar(prompt, base + "_img.png")
+            gif = motor_matematico.gerar_gif(prompt, base + ".gif")     # animado, sem Pillow
+            res = {"arquivo": gif, "imagem": png, "url": "", "origem": "matematico"}
             callback_chat("✅ Pronto pelo motor matematico (arte generativa, nao e IA de imagem).")
             self.ultimo = res
             return res

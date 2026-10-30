@@ -4,7 +4,7 @@ package.name = ttokenstudio
 package.domain = com.ttoken
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas
-source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests
+source.exclude_dirs = .config,sample_data,.github,.buildozer,bin,tests,ferramentas
 version = 1.22.0
 requirements = python3,kivy==2.3.0,pillow,requests,urllib3,idna,charset-normalizer,certifi,pyjnius,android,androidstorage4kivy
 orientation = portrait

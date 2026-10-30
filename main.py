@@ -1613,6 +1613,10 @@ class TtokenApp(App):
         self.est_btn = NeonButton("GERAR", height=dp(48))
         self.est_btn.bind(on_release=self._est_gerar)
         self.est_chat.add_widget(self.est_btn)
+        self._est_offline = False
+        self.est_off = Chip("MODO OFFLINE: DESLIGADO (toque para ligar)", height=40)
+        self.est_off.bind(on_release=self._est_alternar_offline)
+        self.est_chat.add_widget(self.est_off)
         anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
         anim.bind(on_release=lambda w: self._est_pegar_foto_animar())
         self.est_chat.add_widget(anim)
@@ -1741,8 +1745,13 @@ class TtokenApp(App):
         self._est_msg("🎬 Pedido: " + prompt[:80])
         self._est_maestro = maestro_ttoken.MaestroTtoken(
             links["colab"], links["local"], links["chave"], pasta=self._pasta_dados(),
-            fallback_apis=self._est_apis)
+            fallback_apis=self._est_apis, offline=getattr(self, "_est_offline", False))
         self._est_maestro.gerar_em_thread(prompt, self._est_msg, self._est_fim, ui=self._ui)
+
+    def _est_alternar_offline(self, *_):
+        self._est_offline = not self._est_offline
+        self.est_off.text = ("MODO OFFLINE: LIGADO (Python puro, sem internet)" if self._est_offline
+                             else "MODO OFFLINE: DESLIGADO (toque para ligar)")
 
     def _est_pegar_foto_animar(self):
         if platform != "android" or Chooser is None:

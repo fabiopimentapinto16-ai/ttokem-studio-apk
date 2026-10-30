@@ -150,6 +150,26 @@ class TestCascata(unittest.TestCase):
         self.assertTrue(os.path.exists(r["imagem"]) and r["imagem"].endswith(".png"))
         self.assertEqual(Image.open(r["imagem"]).size, (256, 256))
 
+    def test_modo_offline_nao_toca_a_rede(self):
+        class Proibido:
+            def get(self, *a, **k): raise AssertionError("usou a rede")
+            post = get
+        chamou = []
+        m = self.maestro(link_colab="https://x.trycloudflare.com", link_python_local="http://127.0.0.1:9",
+                         http=Proibido(), offline=True, fallback_apis=lambda *a: chamou.append(1))
+        r = m.gerar_video("mar azul", self.msgs.append)
+        self.assertEqual(r["origem"], "matematico")
+        self.assertEqual(chamou, [])
+        self.assertTrue(any("offline" in x.lower() for x in self.msgs))
+
+    def test_gif_puro_sem_pillow_abre_e_anima(self):
+        import motor_matematico as mm
+        from PIL import ImageChops
+        g = Image.open(__import__("io").BytesIO(mm.gerar_gif_bytes("fogo", 64, 8, 10)))
+        self.assertEqual((g.format, g.n_frames, g.size), ("GIF", 8, (64, 64)))
+        g.seek(0); a = g.convert("RGB").copy(); g.seek(4); b = g.convert("RGB").copy()
+        self.assertIsNotNone(ImageChops.difference(a, b).getbbox())
+
     def test_motor_matematico_deterministico_e_png_valido(self):
         import motor_matematico as mm
         a, b = mm.gerar_bytes("mar azul", 64), mm.gerar_bytes("mar azul", 64)

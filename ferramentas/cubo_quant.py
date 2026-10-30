@@ -1,0 +1,189 @@
+"""CUBO-QUANT: quantizacao de pesos em CUBOS (blocos) de 4 bits + leitor em streaming.
+
+Sem torch: so numpy. Serve para o Colab (comprimir) e para o Pydroid 3 (ler).
+
+O que era errado no codigo antigo (erro 'cannot reshape array of size 12800 into shape
+(320,4,3,3)'): para quantizar, a matriz era COMPLETADA com zeros ate ser multiplo de 8
+(36 colunas -> 40; 320*40 = 12800), mas na hora de ler ninguem cortava esse enchimento antes de
+voltar a forma original (320*4*3*3 = 11520). Aqui a forma original e o tamanho real ficam
+gravados no arquivo e o enchimento e sempre cortado.
+
+Outra correcao honesta: o "Q4" antigo guardava cada valor de 4 bits num int8 (1 byte), entao so
+chegava a 1/4 do FP32. Aqui dois valores de 4 bits sao empacotados em 1 byte (1/8 do FP32).
+
+Formato .ttq:  b"TTQ1" | uint64 tamanho do cabecalho | cabecalho JSON | blobs (alinhados em 8).
+Cada tensor 2D+ vira matriz (linhas x resto); a matriz e cortada em cubos bh x bw; cada cubo tem
+UMA escala (float16) = max|cubo| / 7; os valores vao de -8 a 7 (guardados como 0..15).
+"""
+import json
+import mmap
+import os
+import struct
+import sys
+
+import numpy as np
+
+MAGICO = b"TTQ1"
+MIN_ELEMENTOS = 256          # tensores menores (bias, norm) ficam em float16, sem perda
+
+
+def _alinha(n, a=8):
+    return (n + a - 1) // a * a
+
+
+def quantizar(arr, bloco=(8, 8)):
+    """Devolve (empacotado uint8, escalas float16, linhas, colunas) de um tensor >= 2D."""
+    bh, bw = bloco
+    arr = np.asarray(arr, dtype=np.float32)
+    m = arr.reshape(arr.shape[0], -1)
+    R, C = m.shape
+    Rp, Cp = _alinha(R, bh), _alinha(C, bw)
+    p = np.zeros((Rp, Cp), dtype=np.float32)
+    p[:R, :C] = m
+    b = p.reshape(Rp // bh, bh, Cp // bw, bw).transpose(0, 2, 1, 3)       # (nbh, nbw, bh, bw)
+    maximo = np.abs(b).max(axis=(2, 3))
+    esc = np.where(maximo == 0, 1.0, maximo / 7.0).astype(np.float16)
+    esc32 = esc.astype(np.float32)                    # usa a escala JA arredondada (consistente)
+    q = np.clip(np.rint(b / esc32[:, :, None, None]), -8, 7).astype(np.int8) + 8
+    plano = q.astype(np.uint8).reshape(-1)
+    if plano.size % 2:
+        plano = np.concatenate([plano, np.zeros(1, np.uint8)])
+    pack = (plano[0::2] << 4) | plano[1::2]            # 2 valores de 4 bits por byte
+    return pack.astype(np.uint8), esc, R, C
+
+
+def desquantizar(pack, esc, R, C, forma, bloco=(8, 8), dtype=np.float32):
+    bh, bw = bloco
+    Rp, Cp = _alinha(R, bh), _alinha(C, bw)
+    n = Rp * Cp
+    plano = np.empty(pack.size * 2, dtype=np.uint8)
+    plano[0::2] = pack >> 4
+    plano[1::2] = pack & 15
+    q = plano[:n].astype(np.int8).astype(np.float32) - 8.0
+    b = q.reshape(Rp // bh, Cp // bw, bh, bw) * esc.astype(np.float32)[:, :, None, None]
+    p = b.transpose(0, 2, 1, 3).reshape(Rp, Cp)
+    return p[:R, :C].reshape(forma).astype(dtype)      # CORTA o enchimento e volta a forma
+
+
+def erro(original, recuperado):
+    """Metricas honestas: SNR em dB, erro maximo e erro medio relativo."""
+    o = np.asarray(original, np.float64).ravel()
+    r = np.asarray(recuperado, np.float64).ravel()
+    ruido = np.sum((o - r) ** 2)
+    sinal = np.sum(o ** 2)
+    snr = float("inf") if ruido == 0 else 10 * np.log10(max(sinal, 1e-30) / ruido)
+    return {"snr_db": round(float(snr), 2), "erro_max": float(np.abs(o - r).max()),
+            "erro_medio_rel": float(np.abs(o - r).mean() / (np.abs(o).mean() + 1e-12))}
+
+
+# ------------------------------------------------------------------ gravar
+def salvar(estado, caminho, bloco=(8, 8)):
+    """estado: dict nome -> ndarray. Grava o .ttq (atomico). Devolve estatisticas."""
+    meta, blobs, pos = {}, [], 0
+    bruto = 0
+    for nome, arr in estado.items():
+        arr = np.asarray(arr)
+        bruto += arr.size * 4
+        if arr.ndim >= 2 and arr.size >= MIN_ELEMENTOS:
+            pack, esc, R, C = quantizar(arr, bloco)
+            dados = [pack.tobytes(), esc.tobytes()]
+            meta[nome] = {"modo": "q4", "forma": list(arr.shape), "R": R, "C": C,
+                          "off": pos, "n": len(dados[0]),
+                          "off_esc": pos + _alinha(len(dados[0])), "n_esc": len(dados[1])}
+            tamanho = _alinha(len(dados[0])) + _alinha(len(dados[1]))
+            blobs.append((pos, dados[0])); blobs.append((meta[nome]["off_esc"], dados[1]))
+        else:
+            d = np.ascontiguousarray(arr.astype(np.float16)).tobytes()
+            meta[nome] = {"modo": "f16", "forma": list(arr.shape), "off": pos, "n": len(d)}
+            blobs.append((pos, d))
+            tamanho = _alinha(len(d))
+        pos += tamanho
+    cab = json.dumps({"bloco": list(bloco), "tensores": meta}).encode("utf-8")
+    ini = _alinha(4 + 8 + len(cab))
+    tmp = caminho + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(MAGICO + struct.pack("<Q", len(cab)) + cab)
+        f.write(b"\0" * (ini - 12 - len(cab)))
+        for off, d in blobs:
+            f.seek(ini + off)
+            f.write(d)
+        f.truncate(ini + pos)
+    os.replace(tmp, caminho)
+    final = os.path.getsize(caminho)
+    return {"bruto_fp32_mb": bruto / 2**20, "arquivo_mb": final / 2**20,
+            "economia_pct": round(100 * (1 - final / max(bruto, 1)), 1)}
+
+
+# ------------------------------------------------------------------ ler (streaming)
+class Leitor:
+    """Le UM tensor por vez direto do arquivo (mmap): a RAM so guarda o tensor em uso."""
+
+    def __init__(self, caminho):
+        self._f = open(caminho, "rb")
+        if self._f.read(4) != MAGICO:
+            self._f.close()
+            raise ValueError("arquivo nao e um .ttq valido")
+        (n,) = struct.unpack("<Q", self._f.read(8))
+        cab = json.loads(self._f.read(n).decode("utf-8"))
+        self.bloco = tuple(cab["bloco"])
+        self.meta = cab["tensores"]
+        self._ini = _alinha(12 + n)
+        self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
+
+    def nomes(self):
+        return list(self.meta)
+
+    def ler(self, nome, dtype=np.float32):
+        t = self.meta[nome]
+        forma = tuple(t["forma"])
+        base = self._ini
+        if t["modo"] == "f16":
+            d = np.frombuffer(self._mm, np.float16, count=int(np.prod(forma, dtype=np.int64)),
+                              offset=base + t["off"])
+            return d.reshape(forma).astype(dtype)
+        pack = np.frombuffer(self._mm, np.uint8, count=t["n"], offset=base + t["off"])
+        esc = np.frombuffer(self._mm, np.float16, count=t["n_esc"] // 2,
+                            offset=base + t["off_esc"])
+        bh, bw = self.bloco
+        esc = esc.reshape(_alinha(t["R"], bh) // bh, _alinha(t["C"], bw) // bw)
+        return desquantizar(pack, esc, t["R"], t["C"], forma, self.bloco, dtype)
+
+    def itens(self):
+        for nome in self.meta:
+            yield nome, self.ler(nome)
+
+    def fechar(self):
+        try:
+            self._mm.close()
+        finally:
+            self._f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.fechar()
+
+
+def para_torch(caminho, dispositivo="cpu", dtype_nome="float16"):
+    """Colab: monta um state_dict do PyTorch lendo o .ttq (importa torch so aqui)."""
+    import torch
+    dt = getattr(torch, dtype_nome)
+    sd = {}
+    with Leitor(caminho) as lt:
+        for nome, arr in lt.itens():
+            sd[nome] = torch.from_numpy(arr).to(dispositivo).to(dt)
+    return sd
+
+
+def de_safetensors(entrada, saida, bloco=(8, 8)):
+    """Converte um .safetensors (so float32/float16) em .ttq. Precisa de `safetensors`."""
+    from safetensors.numpy import load_file
+    return salvar(load_file(entrada), saida, bloco)
+
+
+if __name__ == "__main__":      # python cubo_quant.py modelo.safetensors saida.ttq
+    if len(sys.argv) != 3:
+        print("uso: python cubo_quant.py entrada.safetensors saida.ttq")
+        sys.exit(1)
+    print(de_safetensors(sys.argv[1], sys.argv[2]))
