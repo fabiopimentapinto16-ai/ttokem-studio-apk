@@ -280,8 +280,9 @@ with torch.no_grad():
         return f
     hs = [unet.conv_in.register_forward_hook(gancho("conv_in")),
           unet.time_embedding.register_forward_hook(gancho("time_embedding")),
-          unet.mid_block.register_forward_hook(gancho("mid_block")),
           unet.conv_out.register_forward_hook(gancho("conv_out"))]
+    if unet.mid_block is not None:          # o tiny-sd NAO tem bloco do meio (e None)
+        hs.append(unet.mid_block.register_forward_hook(gancho("mid_block")))
     hs += [b.register_forward_hook(gancho("down_%d" % i)) for i, b in enumerate(unet.down_blocks)]
     hs += [b.register_forward_hook(gancho("up_%d" % i)) for i, b in enumerate(unet.up_blocks)]
     def rodar(tag):
