@@ -31,8 +31,9 @@ def _alinha(n, a=8):
     return (n + a - 1) // a * a
 
 
-def quantizar(arr, bloco=(8, 8)):
-    """Devolve (empacotado uint8, escalas float16, linhas, colunas) de um tensor >= 2D."""
+def quantizar(arr, bloco=(8, 8), bits=4):
+    """Devolve (empacotado uint8, escalas float16, linhas, colunas) de um tensor >= 2D.
+    bits=4: 2 valores por byte (-8..7). bits=8: 1 valor por byte (-128..127), mais qualidade."""
     bh, bw = bloco
     arr = np.asarray(arr, dtype=np.float32)
     m = arr.reshape(arr.shape[0], -1)
@@ -42,27 +43,46 @@ def quantizar(arr, bloco=(8, 8)):
     p[:R, :C] = m
     b = p.reshape(Rp // bh, bh, Cp // bw, bw).transpose(0, 2, 1, 3)       # (nbh, nbw, bh, bw)
     maximo = np.abs(b).max(axis=(2, 3))
-    esc = np.where(maximo == 0, 1.0, maximo / 7.0).astype(np.float16)
+    nivel = 7.0 if bits == 4 else 127.0
+    esc = np.where(maximo == 0, 1.0, maximo / nivel).astype(np.float16)
     esc32 = esc.astype(np.float32)                    # usa a escala JA arredondada (consistente)
-    q = np.clip(np.rint(b / esc32[:, :, None, None]), -8, 7).astype(np.int8) + 8
-    plano = q.astype(np.uint8).reshape(-1)
-    if plano.size % 2:
-        plano = np.concatenate([plano, np.zeros(1, np.uint8)])
-    pack = (plano[0::2] << 4) | plano[1::2]            # 2 valores de 4 bits por byte
-    return pack.astype(np.uint8), esc, R, C
+    q = np.rint(b / esc32[:, :, None, None])
+    if bits == 4:
+        plano = (np.clip(q, -8, 7).astype(np.int8) + 8).astype(np.uint8).reshape(-1)
+        if plano.size % 2:
+            plano = np.concatenate([plano, np.zeros(1, np.uint8)])
+        return ((plano[0::2] << 4) | plano[1::2]).astype(np.uint8), esc, R, C
+    return (np.clip(q, -128, 127).astype(np.int16) + 128).astype(np.uint8).reshape(-1), esc, R, C
 
 
-def desquantizar(pack, esc, R, C, forma, bloco=(8, 8), dtype=np.float32):
+def desquantizar(pack, esc, R, C, forma, bloco=(8, 8), dtype=np.float32, bits=4,
+                 max_elementos=1 << 16):
+    """Reconstroi POR PARTES (algumas linhas de cubos por vez): os temporarios ficam pequenos,
+    so o resultado final ocupa a RAM do tensor. Corta o enchimento e volta a forma original."""
     bh, bw = bloco
-    Rp, Cp = _alinha(R, bh), _alinha(C, bw)
-    n = Rp * Cp
-    plano = np.empty(pack.size * 2, dtype=np.uint8)
-    plano[0::2] = pack >> 4
-    plano[1::2] = pack & 15
-    q = plano[:n].astype(np.int8).astype(np.float32) - 8.0
-    b = q.reshape(Rp // bh, Cp // bw, bh, bw) * esc.astype(np.float32)[:, :, None, None]
-    p = b.transpose(0, 2, 1, 3).reshape(Rp, Cp)
-    return p[:R, :C].reshape(forma).astype(dtype)      # CORTA o enchimento e volta a forma
+    nbh, nbw = _alinha(R, bh) // bh, _alinha(C, bw) // bw
+    esc = esc.astype(np.float32).reshape(nbh, nbw)
+    por_linha = nbw * bh * bw                           # elementos de uma linha de cubos
+    passo = max(1, max_elementos // por_linha)
+    if bits == 4 and por_linha % 2:                     # cubo impar: nao da para partir no meio do byte
+        passo = nbh
+    out = np.empty((R, C), dtype=np.float32)
+    for a in range(0, nbh, passo):
+        z = min(nbh, a + passo)
+        i0, i1 = a * por_linha, z * por_linha
+        if bits == 4:
+            bytes_ = pack[i0 // 2:(i1 + 1) // 2]
+            plano = np.empty(bytes_.size * 2, dtype=np.uint8)
+            plano[0::2] = bytes_ >> 4
+            plano[1::2] = bytes_ & 15
+            q = plano[:i1 - i0].astype(np.float32) - 8.0
+        else:
+            q = pack[i0:i1].astype(np.float32) - 128.0
+        blocos = q.reshape(z - a, nbw, bh, bw) * esc[a:z, :, None, None]
+        faixa = blocos.transpose(0, 2, 1, 3).reshape((z - a) * bh, nbw * bw)
+        r0, r1 = a * bh, min(R, z * bh)
+        out[r0:r1, :] = faixa[:r1 - r0, :C]
+    return out.reshape(forma).astype(dtype, copy=False)
 
 
 def erro(original, recuperado):
@@ -77,7 +97,7 @@ def erro(original, recuperado):
 
 
 # ------------------------------------------------------------------ gravar
-def salvar(estado, caminho, bloco=(8, 8)):
+def salvar(estado, caminho, bloco=(8, 8), bits=4):
     """estado: dict nome -> ndarray. Grava o .ttq (atomico). Devolve estatisticas."""
     meta, blobs, pos = {}, [], 0
     bruto = 0
@@ -85,9 +105,9 @@ def salvar(estado, caminho, bloco=(8, 8)):
         arr = np.asarray(arr)
         bruto += arr.size * 4
         if arr.ndim >= 2 and arr.size >= MIN_ELEMENTOS:
-            pack, esc, R, C = quantizar(arr, bloco)
+            pack, esc, R, C = quantizar(arr, bloco, bits)
             dados = [pack.tobytes(), esc.tobytes()]
-            meta[nome] = {"modo": "q4", "forma": list(arr.shape), "R": R, "C": C,
+            meta[nome] = {"modo": "q%d" % bits, "forma": list(arr.shape), "R": R, "C": C,
                           "off": pos, "n": len(dados[0]),
                           "off_esc": pos + _alinha(len(dados[0])), "n_esc": len(dados[1])}
             tamanho = _alinha(len(dados[0])) + _alinha(len(dados[1]))
@@ -98,7 +118,7 @@ def salvar(estado, caminho, bloco=(8, 8)):
             blobs.append((pos, d))
             tamanho = _alinha(len(d))
         pos += tamanho
-    cab = json.dumps({"bloco": list(bloco), "tensores": meta}).encode("utf-8")
+    cab = json.dumps({"bloco": list(bloco), "bits": bits, "tensores": meta}).encode("utf-8")
     ini = _alinha(4 + 8 + len(cab))
     tmp = caminho + ".tmp"
     with open(tmp, "wb") as f:
@@ -126,6 +146,7 @@ class Leitor:
         (n,) = struct.unpack("<Q", self._f.read(8))
         cab = json.loads(self._f.read(n).decode("utf-8"))
         self.bloco = tuple(cab["bloco"])
+        self.bits = int(cab.get("bits", 4))
         self.meta = cab["tensores"]
         self._ini = _alinha(12 + n)
         self._mm = mmap.mmap(self._f.fileno(), 0, access=mmap.ACCESS_READ)
@@ -146,7 +167,7 @@ class Leitor:
                             offset=base + t["off_esc"])
         bh, bw = self.bloco
         esc = esc.reshape(_alinha(t["R"], bh) // bh, _alinha(t["C"], bw) // bw)
-        return desquantizar(pack, esc, t["R"], t["C"], forma, self.bloco, dtype)
+        return desquantizar(pack, esc, t["R"], t["C"], forma, self.bloco, dtype, self.bits)
 
     def itens(self):
         for nome in self.meta:
@@ -176,10 +197,10 @@ def para_torch(caminho, dispositivo="cpu", dtype_nome="float16"):
     return sd
 
 
-def de_safetensors(entrada, saida, bloco=(8, 8)):
+def de_safetensors(entrada, saida, bloco=(8, 8), bits=4):
     """Converte um .safetensors (so float32/float16) em .ttq. Precisa de `safetensors`."""
     from safetensors.numpy import load_file
-    return salvar(load_file(entrada), saida, bloco)
+    return salvar(load_file(entrada), saida, bloco, bits)
 
 
 if __name__ == "__main__":      # python cubo_quant.py modelo.safetensors saida.ttq

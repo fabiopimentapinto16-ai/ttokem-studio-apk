@@ -26,7 +26,7 @@ class T(unittest.TestCase):
     def test_erro_por_valor_limitado_pela_escala(self):
         r = np.random.default_rng(1).standard_normal((40, 40)).astype(np.float32)
         pack, esc, R, C = cq.quantizar(r)
-        rec = cq.desquantizar(pack, esc, R, C, r.shape)
+        rec = cq.desquantizar(pack, esc, R, C, r.shape, max_elementos=128)
         # cada valor erra no maximo meia escala do seu cubo (+ folga do float16)
         for i in range(0, 40, 8):
             for j in range(0, 40, 8):
@@ -54,6 +54,23 @@ class T(unittest.TestCase):
         open(p, "wb").write(b"lixo lixo lixo lixo")
         with self.assertRaises(ValueError):
             cq.Leitor(p)
+
+    def test_8_bits_e_muito_melhor_e_parte_a_parte_igual(self):
+        r = np.random.default_rng(5).standard_normal((100, 70)).astype(np.float32)
+        out = {}
+        for bits in (4, 8):
+            pk, es, R, C = cq.quantizar(r, (8, 8), bits)
+            inteira = cq.desquantizar(pk, es, R, C, r.shape, bits=bits)
+            partes = cq.desquantizar(pk, es, R, C, r.shape, bits=bits, max_elementos=100)
+            np.testing.assert_array_equal(inteira, partes)
+            out[bits] = cq.erro(r, inteira)["snr_db"]
+        self.assertGreater(out[8], out[4] + 15)
+
+    def test_arquivo_guarda_os_bits(self):
+        d = tempfile.mkdtemp(); p = os.path.join(d, "m.ttq")
+        cq.salvar({"w": np.random.default_rng(1).standard_normal((32, 32)).astype(np.float32)}, p, bits=8)
+        with cq.Leitor(p) as lt:
+            self.assertEqual(lt.bits, 8)
 
     def test_blocos_diferentes(self):
         r = np.random.default_rng(2).standard_normal((64, 64)).astype(np.float32)
