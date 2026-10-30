@@ -72,6 +72,23 @@ class T(unittest.TestCase):
         with cq.Leitor(p) as lt:
             self.assertEqual(lt.bits, 8)
 
+    def test_reordenar_cubo_volta_exato_e_ajuda_com_canais_desiguais(self):
+        r = np.random.default_rng(7)
+        lin = np.exp(r.standard_normal((256, 1)) * 0.8); col = np.exp(r.standard_normal((1, 192)) * 0.8)
+        w = (r.standard_normal((256, 192)) * 0.02 * lin * col).astype(np.float32)
+        d = tempfile.mkdtemp(); snr = {}
+        for ro in (False, True):
+            p = os.path.join(d, "m%d.ttq" % ro); cq.salvar({"w": w}, p, reordenar=ro)
+            with cq.Leitor(p) as lt:
+                rec = lt.ler("w")
+            self.assertEqual(rec.shape, w.shape)           # a ordem original e restaurada
+            snr[ro] = cq.erro(w, rec)["snr_db"]
+        self.assertGreater(snr[True], snr[False] + 1.5)
+        # 8 bits + reordenar: praticamente sem perda, na ordem certa
+        p = os.path.join(d, "m8.ttq"); cq.salvar({"w": w}, p, bits=8, reordenar=True)
+        with cq.Leitor(p) as lt:
+            self.assertGreater(cq.erro(w, lt.ler("w"))["snr_db"], 35)
+
     def test_blocos_diferentes(self):
         r = np.random.default_rng(2).standard_normal((64, 64)).astype(np.float32)
         d = tempfile.mkdtemp()

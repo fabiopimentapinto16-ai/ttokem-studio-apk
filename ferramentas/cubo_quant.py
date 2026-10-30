@@ -85,6 +85,15 @@ def desquantizar(pack, esc, R, C, forma, bloco=(8, 8), dtype=np.float32, bits=4,
     return out.reshape(forma).astype(dtype, copy=False)
 
 
+def ordem_cubo(m):
+    """Permutacao de linhas e colunas que junta valores de tamanho parecido (como arrumar as
+    pecas do cubo magico por cor): ordena por energia. Cubos vizinhos ficam com faixa de valores
+    parecida, a escala de cada cubo fica justa e o MESMO numero de bits erra menos."""
+    pr = np.argsort(np.abs(m).max(axis=1))
+    pc = np.argsort(np.abs(m).max(axis=0))
+    return pr, pc
+
+
 def erro(original, recuperado):
     """Metricas honestas: SNR em dB, erro maximo e erro medio relativo."""
     o = np.asarray(original, np.float64).ravel()
@@ -97,7 +106,7 @@ def erro(original, recuperado):
 
 
 # ------------------------------------------------------------------ gravar
-def salvar(estado, caminho, bloco=(8, 8), bits=4):
+def salvar(estado, caminho, bloco=(8, 8), bits=4, reordenar=False):
     """estado: dict nome -> ndarray. Grava o .ttq (atomico). Devolve estatisticas."""
     meta, blobs, pos = {}, [], 0
     bruto = 0
@@ -105,13 +114,23 @@ def salvar(estado, caminho, bloco=(8, 8), bits=4):
         arr = np.asarray(arr)
         bruto += arr.size * 4
         if arr.ndim >= 2 and arr.size >= MIN_ELEMENTOS:
-            pack, esc, R, C = quantizar(arr, bloco, bits)
+            m = arr.astype(np.float32).reshape(arr.shape[0], -1)
+            pr = pc = None
+            if reordenar:                                  # "resolve o cubo": agrupa parecidos
+                pr, pc = ordem_cubo(m)
+                m = m[pr][:, pc]
+            pack, esc, R, C = quantizar(m, bloco, bits)
             dados = [pack.tobytes(), esc.tobytes()]
             meta[nome] = {"modo": "q%d" % bits, "forma": list(arr.shape), "R": R, "C": C,
                           "off": pos, "n": len(dados[0]),
                           "off_esc": pos + _alinha(len(dados[0])), "n_esc": len(dados[1])}
             tamanho = _alinha(len(dados[0])) + _alinha(len(dados[1]))
             blobs.append((pos, dados[0])); blobs.append((meta[nome]["off_esc"], dados[1]))
+            if pr is not None:
+                dr, dc = pr.astype(np.uint32).tobytes(), pc.astype(np.uint32).tobytes()
+                meta[nome]["off_pr"], meta[nome]["off_pc"] = pos + tamanho, pos + tamanho + _alinha(len(dr))
+                blobs.append((meta[nome]["off_pr"], dr)); blobs.append((meta[nome]["off_pc"], dc))
+                tamanho += _alinha(len(dr)) + _alinha(len(dc))
         else:
             d = np.ascontiguousarray(arr.astype(np.float16)).tobytes()
             meta[nome] = {"modo": "f16", "forma": list(arr.shape), "off": pos, "n": len(d)}
@@ -167,6 +186,12 @@ class Leitor:
                             offset=base + t["off_esc"])
         bh, bw = self.bloco
         esc = esc.reshape(_alinha(t["R"], bh) // bh, _alinha(t["C"], bw) // bw)
+        if "off_pr" in t:                                    # desfaz a reordenacao do cubo
+            m = desquantizar(pack, esc, t["R"], t["C"], (t["R"], t["C"]), self.bloco, np.float32, self.bits)
+            pr = np.frombuffer(self._mm, np.uint32, count=t["R"], offset=base + t["off_pr"])
+            pc = np.frombuffer(self._mm, np.uint32, count=t["C"], offset=base + t["off_pc"])
+            ir, ic = np.argsort(pr), np.argsort(pc)
+            return m[ir][:, ic].reshape(forma).astype(dtype, copy=False)
         return desquantizar(pack, esc, t["R"], t["C"], forma, self.bloco, dtype, self.bits)
 
     def itens(self):

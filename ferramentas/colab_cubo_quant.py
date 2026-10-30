@@ -20,9 +20,11 @@ gerar = lambda: pipe(PROMPT, num_inference_steps=1, guidance_scale=0.0,
 original = gerar()                                          # imagem com os pesos originais
 
 BLOCO = (8, 8)          # se a imagem ficar ruim, tente (4, 4) ou (1, 32)
+BITS = 4                # 8 = quase sem perda (arquivo 2x maior)
+REORDENAR = True        # "resolve o cubo": junta pesos parecidos -> menos erro com os mesmos bits
 estado = {k: v.float().cpu().numpy() for k, v in pipe.unet.state_dict().items()}
 t = time.time()
-info = cq.salvar(estado, "/content/sdxs_unet.ttq", BLOCO)
+info = cq.salvar(estado, "/content/sdxs_unet.ttq", BLOCO, BITS, REORDENAR)
 print("quantizado em %.1fs:" % (time.time() - t), info)
 
 pesos_orig = {k: v.clone() for k, v in pipe.unet.state_dict().items()}
