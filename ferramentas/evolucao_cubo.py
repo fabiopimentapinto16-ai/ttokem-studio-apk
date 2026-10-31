@@ -10,19 +10,19 @@ PM0 = 0.12
 def tamanho_frac(g, numel):
     return float((numel * OPCOES_BITS[g]).sum() / (numel.sum() * 16.0))
 
-def mutar(g, imp, pm, rng):
+def mutar(g, imp, pm, rng, piso=0):
     """Cada gene muda com prob. pm. Tensores IMPORTANTES tendem a subir de precisao, os outros a descer."""
     f = g.copy()
     mud = rng.random(len(g)) < pm
     sobe = rng.random(len(g)) < np.clip(0.15 + 0.7 * imp, 0.05, 0.95)
     passo = np.where(sobe, 1, -1)
-    f[mud] = np.clip(f[mud] + passo[mud], 0, len(OPCOES_BITS) - 1)
+    f[mud] = np.clip(f[mud] + passo[mud], piso, len(OPCOES_BITS) - 1)
     return f
 
 def cruzar(a, b, rng):
     return np.where(rng.random(len(a)) < 0.5, a, b)
 
-def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semente=0, log=print, iniciais=()):
+def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semente=0, log=print, iniciais=(), piso=0):
     """avaliar(g) -> erro relativo da saida (menor = melhor). Quem passa do orcamento de tamanho MORRE;
     entre os vivos vence o menor erro. Para quando algum vivo atinge a meta de SNR (dB)."""
     rng = np.random.default_rng(semente)
@@ -36,8 +36,8 @@ def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semen
         return cache[k]
     populacao = [np.asarray(g, np.int64) for g in iniciais][:pop]
     while len(populacao) < pop:
-        base = populacao[rng.integers(0, len(populacao))] if populacao else np.ones(N, np.int64)
-        populacao.append(mutar(base, imp, 0.1, rng))
+        base = populacao[rng.integers(0, len(populacao))] if populacao else np.full(N, max(piso, 1), np.int64)
+        populacao.append(mutar(base, imp, 0.1, rng, piso))
     pm, sem_melhora, melhor_global = PM0, 0, (float("inf"), None, None)
     historico = []
     for ger in range(geracoes):
@@ -67,18 +67,18 @@ def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semen
         while len(filhos) < pop:
             if rng.random() < 0.3 and len(sobreviventes) > 1:
                 i, j = rng.choice(len(sobreviventes), 2, replace=False)
-                f = mutar(cruzar(sobreviventes[i], sobreviventes[j], rng), imp, pm / 2, rng)
+                f = mutar(cruzar(sobreviventes[i], sobreviventes[j], rng), imp, pm / 2, rng, piso)
             else:
-                f = mutar(sobreviventes[rng.integers(0, len(sobreviventes))], imp, pm, rng)
+                f = mutar(sobreviventes[rng.integers(0, len(sobreviventes))], imp, pm, rng, piso)
             filhos.append(f)
         populacao = filhos
     return melhor_global, historico
 
 
-def guloso_inicial(efeito4, numel, orcamento):
+def guloso_inicial(efeito4, numel, orcamento, piso=0):
     """Ponto de partida informado: usa o efeito MEDIDO de cada tensor em 4x4 e sobe, um degrau por vez, o tensor
     com maior ganho por bit extra, enquanto couber no orcamento. A evolucao refina o resto (efeitos nao aditivos)."""
-    N = len(numel); g = np.zeros(N, np.int64)
+    N = len(numel); g = np.full(N, piso, np.int64)
     ganho = lambda i: efeito4[i] * (ERRO_REL_4x4[g[i]] - ERRO_REL_4x4[g[i] + 1]) / (numel[i] * (OPCOES_BITS[g[i] + 1] - OPCOES_BITS[g[i]]))
     ativo = set(range(N))
     while ativo:

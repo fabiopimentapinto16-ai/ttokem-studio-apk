@@ -55,3 +55,13 @@ def test_mutacao_tende_a_subir_importantes():
     f = ev.mutar(g, imp, 1.0, rng)
     assert (f[:1000] > 1).mean() > 0.8 and (f[1000:] < 1).mean() > 0.6
     assert f.min() >= 0 and f.max() <= 3
+
+
+def test_piso_proibe_precisao_baixa():
+    numel, avaliar, medido, imp = mundo(3)
+    gi = ev.guloso_inicial(medido, numel, 0.62, piso=1)
+    assert gi.min() >= 1
+    (e, g, t), _ = ev.evoluir(avaliar, numel, imp, 0.62, 999, pop=10, geracoes=6, iniciais=[gi], piso=1, log=lambda *a: None)
+    assert g.min() >= 1 and t <= 0.62 + 1e-9
+    f = ev.mutar(np.ones(500, int), np.zeros(500), 1.0, np.random.default_rng(0), piso=1)
+    assert f.min() >= 1

@@ -1,7 +1,7 @@
 # TTOKEN - EVOLUCAO: uma populacao de 'receitas' de quantizacao; quem estoura o tamanho ou fica longe da meta MORRE,
 # e os melhores geram filhos com mutacoes (genes = precisao de cada tensor: 8x8, 4x4, 2x2 ou fp16). tiny-sd REAL.
-# Fitness = erro na SAIDA do UNet reproduzindo as 4 chamadas REAIS da amostragem (nao nos pesos). Valida em imagens (4 sementes).
-# Gera tinysd_unet_final.ttq (receita campea ja gravada) + tinysd_genoma.json. ~35-40 min (CPU).
+# Fitness = erro na SAIDA do UNet reproduzindo as 4 chamadas REAIS da amostragem (nao nos pesos). Valida em 6 sementes DIFERENTES das usadas na evolucao.
+# Gera tinysd_unet_final.ttq (receita campea ja gravada) + tinysd_genoma.json. ~45 min (CPU).
 # NAO FOI EXECUTADO AINDA (o sandbox onde escrevi nao tem torch): rode (~20-30 min) e me mande as tabelas.
 # Roda os MESMOS dados do seu teste (seed 5762, 256x256, 4 passos) e compara configuracoes que o
 # codec de cores nao testou: cubos pequenos, 4 bits com cubos finos, reordenar, e TODOS os
@@ -266,7 +266,8 @@ ck = types.ModuleType("cubo_quant_k"); exec(_CODIGO_K, ck.__dict__); sys.modules
 
 from diffusers import AutoPipelineForText2Image
 PROMPT, STEPS, SIZE = "Carro futurista correndo na chuva cyberpunk", 4, 256
-SEEDS = (5762, 1, 2, 3)
+FIT_SEEDS = (5762, 1)              # sementes usadas para MEDIR a evolucao (trajetorias reais do UNet)
+SEEDS = (3, 4, 5, 6, 7, 8)         # sementes SEPARADAS so para validar em imagens (evita viciar na mesma imagem)
 SSIM_ALTO, SSIM_BAIXO = 0.93, 0.80
 pipe = AutoPipelineForText2Image.from_pretrained("segmind/tiny-sd", torch_dtype=torch.float32)
 pipe.set_progress_bar_config(disable=True)
@@ -341,19 +342,19 @@ PM0 = 0.12
 def tamanho_frac(g, numel):
     return float((numel * OPCOES_BITS[g]).sum() / (numel.sum() * 16.0))
 
-def mutar(g, imp, pm, rng):
+def mutar(g, imp, pm, rng, piso=0):
     """Cada gene muda com prob. pm. Tensores IMPORTANTES tendem a subir de precisao, os outros a descer."""
     f = g.copy()
     mud = rng.random(len(g)) < pm
     sobe = rng.random(len(g)) < np.clip(0.15 + 0.7 * imp, 0.05, 0.95)
     passo = np.where(sobe, 1, -1)
-    f[mud] = np.clip(f[mud] + passo[mud], 0, len(OPCOES_BITS) - 1)
+    f[mud] = np.clip(f[mud] + passo[mud], piso, len(OPCOES_BITS) - 1)
     return f
 
 def cruzar(a, b, rng):
     return np.where(rng.random(len(a)) < 0.5, a, b)
 
-def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semente=0, log=print, iniciais=()):
+def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semente=0, log=print, iniciais=(), piso=0):
     """avaliar(g) -> erro relativo da saida (menor = melhor). Quem passa do orcamento de tamanho MORRE;
     entre os vivos vence o menor erro. Para quando algum vivo atinge a meta de SNR (dB)."""
     rng = np.random.default_rng(semente)
@@ -367,8 +368,8 @@ def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semen
         return cache[k]
     populacao = [np.asarray(g, np.int64) for g in iniciais][:pop]
     while len(populacao) < pop:
-        base = populacao[rng.integers(0, len(populacao))] if populacao else np.ones(N, np.int64)
-        populacao.append(mutar(base, imp, 0.1, rng))
+        base = populacao[rng.integers(0, len(populacao))] if populacao else np.full(N, max(piso, 1), np.int64)
+        populacao.append(mutar(base, imp, 0.1, rng, piso))
     pm, sem_melhora, melhor_global = PM0, 0, (float("inf"), None, None)
     historico = []
     for ger in range(geracoes):
@@ -398,18 +399,18 @@ def evoluir(avaliar, numel, imp, orcamento, snr_meta, pop=10, geracoes=20, semen
         while len(filhos) < pop:
             if rng.random() < 0.3 and len(sobreviventes) > 1:
                 i, j = rng.choice(len(sobreviventes), 2, replace=False)
-                f = mutar(cruzar(sobreviventes[i], sobreviventes[j], rng), imp, pm / 2, rng)
+                f = mutar(cruzar(sobreviventes[i], sobreviventes[j], rng), imp, pm / 2, rng, piso)
             else:
-                f = mutar(sobreviventes[rng.integers(0, len(sobreviventes))], imp, pm, rng)
+                f = mutar(sobreviventes[rng.integers(0, len(sobreviventes))], imp, pm, rng, piso)
             filhos.append(f)
         populacao = filhos
     return melhor_global, historico
 
 
-def guloso_inicial(efeito4, numel, orcamento):
+def guloso_inicial(efeito4, numel, orcamento, piso=0):
     """Ponto de partida informado: usa o efeito MEDIDO de cada tensor em 4x4 e sobe, um degrau por vez, o tensor
     com maior ganho por bit extra, enquanto couber no orcamento. A evolucao refina o resto (efeitos nao aditivos)."""
-    N = len(numel); g = np.zeros(N, np.int64)
+    N = len(numel); g = np.full(N, piso, np.int64)
     ganho = lambda i: efeito4[i] * (ERRO_REL_4x4[g[i]] - ERRO_REL_4x4[g[i] + 1]) / (numel[i] * (OPCOES_BITS[g[i] + 1] - OPCOES_BITS[g[i]]))
     ativo = set(range(N))
     while ativo:
@@ -420,31 +421,34 @@ def guloso_inicial(efeito4, numel, orcamento):
         if g[i] >= len(OPCOES_BITS) - 1: ativo.discard(i)
     return g
 
-
 import json
 # ------------------------------ METAS (mude aqui) ------------------------------
 ORC = 0.62          # tamanho maximo (fracao do fp16). Passou disso, o individuo MORRE.
-SNR_META = 50.0     # meta: UNet a 50 dB do original (praticamente indistinguivel); 100% so existe em fp16
-POP, GER = 12, 20
+SNR_META = 62.0     # meta alta de proposito, para a evolucao de fato rodar (100% so existe em fp16)
+POP, GER = 10, 12
+PISO = 1            # NUNCA abaixo de 4x4: o 8x8 'barato' deu pior em imagens (pior SSIM 0.88)
 OPC = [("s", (8, 8), 8), ("s", (4, 4), 8), ("s", (2, 2), 8), ("h",)]
 NOMES_OPC = ["8x8", "4x4", "2x2", "fp16"]
 names = list(alvo); N = len(names)
 numel = np.array([alvo[n].numel() for n in names], np.int64)
 
-# --- grava as chamadas REAIS do UNet numa geracao fp32 (entradas e saidas de cada um dos 4 passos) ---
-trilha = []
+# --- grava as chamadas REAIS do UNet (4 passos) de cada semente de ajuste, em fp32 ---
+trilha, dono = [], []
 def _gancho(mod, args, kwargs, out):
     trilha.append((args[0].detach().clone(), args[1].detach().clone() if torch.is_tensor(args[1]) else torch.tensor(args[1]),
                    kwargs["encoder_hidden_states"].detach().clone(), out[0].detach().clone().numpy()))
-h_ = unet.register_forward_hook(_gancho, with_kwargs=True)
-gerar(SEEDS[0]); h_.remove()
-print("Gravadas %d chamadas reais do UNet (batch %d) na semente %d" % (len(trilha), trilha[0][0].shape[0], SEEDS[0]))
+for k_sd, sd in enumerate(FIT_SEEDS):
+    h_ = unet.register_forward_hook(_gancho, with_kwargs=True)
+    antes = len(trilha); gerar(sd); h_.remove(); dono += [k_sd] * (len(trilha) - antes)
+POR_SEMENTE = len(trilha) // len(FIT_SEEDS)
+print("Gravadas %d chamadas reais do UNet (%d sementes x %d passos)" % (len(trilha), len(FIT_SEEDS), POR_SEMENTE))
 en = [float((o ** 2).sum()) for *_, o in trilha]
-def reproduzir(passos=None):
+def reproduzir(passos=None, sementes=None):
     erro = tot = 0.0
     with torch.no_grad():
         for k, (x, t, enc, o) in enumerate(trilha):
-            if passos is not None and k not in passos: continue
+            if passos is not None and (k % POR_SEMENTE) not in passos: continue
+            if sementes is not None and dono[k] not in sementes: continue
             y = unet(x, t, encoder_hidden_states=enc, return_dict=False)[0].numpy()
             erro += float(((y - o) ** 2).sum()); tot += en[k]
     return erro / tot
@@ -453,9 +457,9 @@ snr_db = lambda e: -10 * np.log10(max(e, 1e-30))
 print("1) Sensibilidade de cada tensor (8 bits 4x4, um por vez) ...")
 efeito = np.zeros(N)
 for i, n in enumerate(names):
-    aplicar(n, OPC[1]); efeito[i] = reproduzir(passos=(0, 2)); alvo[n].data = orig[n].clone()
+    aplicar(n, OPC[1]); efeito[i] = reproduzir(passos=(0, 2), sementes=(0,)); alvo[n].data = orig[n].clone()
     if (i + 1) % 30 == 0: print("   %d/%d" % (i + 1, N))
-imp = np.argsort(np.argsort(efeito / numel)) / N          # importancia por peso (0 a 1)
+imp = np.argsort(np.argsort(efeito / numel)) / N
 print("   mais sensiveis: " + ", ".join(names[i][-34:] for i in np.argsort(-efeito)[:5]))
 
 estado = np.full(N, -1)
@@ -465,41 +469,48 @@ def carregar(g):
 def avaliar(g):
     carregar(g); return reproduzir()
 
-def regra(prefixos, alto=3):                              # achado do diagnostico: erro concentrado em conv_in/out e up_blocks.2
+def regra(prefixos, alto=3):
     g = np.ones(N, np.int64)
     for i, n in enumerate(names):
         if n.startswith(prefixos): g[i] = alto
     return g
 RA = regra(("conv_in", "conv_out", "up_blocks.2."))
-RB = regra(("conv_in", "conv_out", "up_blocks.2.", "down_blocks.0."))
-t4 = np.ones(N, np.int64); t8 = np.zeros(N, np.int64)
-gi = guloso_inicial(efeito, numel, ORC)
-ini = {"4x4 puro (referencia)": t4, "regra A (conv_in/out + up_blocks.2 em fp16)": RA,
-       "regra B (A + down_blocks.0 em fp16)": RB, "guloso informado": gi}
-print("\nPontos de partida (UNet dB nas 4 chamadas reais | tamanho):")
+t4 = np.ones(N, np.int64)
+gi = guloso_inicial(efeito, numel, ORC, piso=PISO)
+ini = {"4x4 puro (referencia)": t4, "regra A (conv_in/out + up_blocks.2 em fp16)": RA, "guloso informado (piso 4x4)": gi}
+print("\nPontos de partida (UNet dB nas chamadas reais | tamanho):")
 for rot, g in ini.items():
     print("   %-46s %.1f dB | %.1f%%" % (rot, snr_db(avaliar(g)), 100 * tamanho_frac(g, numel)))
-print("\n2) EVOLUCAO (meta %.0f dB, orcamento %.0f%% do fp16). Quem estoura o orcamento morre; os melhores geram filhos." % (SNR_META, 100 * ORC))
-iniciais = [g for g in (RA, RB, gi, t4, t8) if tamanho_frac(g, numel) <= ORC]
-(e_b, g_b, t_b), hist = evoluir(avaliar, numel, imp, ORC, SNR_META, pop=POP, geracoes=GER, iniciais=iniciais)
+print("\n2) EVOLUCAO (meta %.0f dB, orcamento %.0f%%, piso 4x4). Quem estoura o orcamento morre; os melhores geram filhos." % (SNR_META, 100 * ORC))
+iniciais = [g for g in (gi, RA, t4) if tamanho_frac(g, numel) <= ORC]
+(e_b, g_b, t_b), hist = evoluir(avaliar, numel, imp, ORC, SNR_META, pop=POP, geracoes=GER, iniciais=iniciais, piso=PISO)
 print("\nCAMPEAO: %.1f dB com %.1f%% do tamanho | " % (snr_db(e_b), 100 * t_b)
       + ", ".join("%s: %d tensores" % (NOMES_OPC[k], int((g_b == k).sum())) for k in range(4)))
-print("Meta de %.0f dB %s." % (SNR_META, "ATINGIDA" if snr_db(e_b) >= SNR_META else "NAO atingida dentro do orcamento (melhor possivel achado)"))
 
 def imagens(g):
     carregar(g)
     ims = [gerar(s) for s in SEEDS]
-    return (float(np.mean([psnr(base[s], i) for s, i in zip(SEEDS, ims)])),
-            float(np.mean([ssim(base[s], i) for s, i in zip(SEEDS, ims)])),
-            float(np.min([ssim(base[s], i) for s, i in zip(SEEDS, ims)])))
-print("\n3) Validacao em IMAGENS (4 sementes; referencia ja medida: 4x4 puro 0.963 / pior 0.940, 'protege 90%' 0.989 / 0.986):")
-print("%-46s %8s %9s | %7s %7s %7s" % ("configuracao", "% fp16", "UNet dB", "PSNR", "SSIM", "pior"))
+    return ims, [psnr(base[s], i) for s, i in zip(SEEDS, ims)], [ssim(base[s], i) for s, i in zip(SEEDS, ims)]
+print("\n3) Validacao em IMAGENS, %d sementes que a evolucao NAO viu. SSIM de cada semente mostra o quanto ele oscila:" % len(SEEDS))
+print("%-44s %7s %8s | %6s %7s %6s | SSIM por semente" % ("configuracao", "% fp16", "UNet dB", "PSNR", "SSIM", "pior"))
 cands = dict(ini); cands["CAMPEAO da evolucao"] = g_b
+guarda = {}
 for rot, g in cands.items():
-    p, sm, pior = imagens(g)
-    print("%-46s %7.1f%% %8.1f | %5.1f dB %.4f %.4f" % (rot, 100 * tamanho_frac(g, numel), snr_db(avaliar(g)), p, sm, pior))
+    ims, ps, ss = imagens(g); guarda[rot] = ims
+    print("%-44s %6.1f%% %7.1f | %5.1f %.4f %.4f | %s" % (rot, 100 * tamanho_frac(g, numel), snr_db(avaliar(g)),
+          np.mean(ps), np.mean(ss), np.min(ss), " ".join("%.2f" % v for v in ss)))
+print("\nLeitura: PSNR (erro de pixel) e mais estavel que SSIM aqui. Se o SSIM pula entre sementes, nao distingue receitas parecidas.")
 
-# --- grava o .ttq FINAL com a receita campea (cubo/precisao por tensor) ---
+# --- imagem lado a lado da semente em que o campeao foi PIOR: original | 4x4 puro | campeao ---
+from PIL import Image, ImageDraw
+rot_c = "CAMPEAO da evolucao"; _, _, ss_c = imagens(g_b)
+w = int(np.argmin(ss_c)); W = SIZE
+quadros = [("ORIGINAL (semente %d)" % SEEDS[w], base[SEEDS[w]]), ("4x4 puro", guarda["4x4 puro (referencia)"][w]), ("campeao", guarda[rot_c][w])]
+folha = Image.new("RGB", (W * 3, W + 18), "white"); d = ImageDraw.Draw(folha)
+for k, (r, im) in enumerate(quadros):
+    folha.paste(im.convert("RGB").resize((W, W)), (k * W, 18)); d.text((k * W + 4, 3), r, fill="black")
+folha.save("tinysd_comparacao.png")
+
 BLOCO_GENE = {0: (8, 8), 1: (4, 4), 2: (2, 2)}
 receita = {names[i]: ("fp16" if g_b[i] == 3 else (BLOCO_GENE[int(g_b[i])], 8)) for i in range(N)}
 est = {k: v.detach().float().numpy() for k, v in unet.state_dict().items() if v.is_floating_point()}
@@ -509,7 +520,7 @@ json.dump({"opcoes": NOMES_OPC, "tamanho_pct": 100 * t_b, "snr_unet_db": snr_db(
            "genoma": {n: NOMES_OPC[int(g_b[i])] for i, n in enumerate(names)}}, open("tinysd_genoma.json", "w"), indent=1)
 try:
     from google.colab import files
-    files.download("tinysd_genoma.json")
+    files.download("tinysd_genoma.json"); files.download("tinysd_comparacao.png")
 except Exception:
     pass
-print("Me mande esta saida e o tinysd_genoma.json. O .ttq final (~360 MB) fica no Colab para o colab_validar_unet.py.")
+print("Me mande esta saida, o tinysd_genoma.json e a imagem tinysd_comparacao.png.")
