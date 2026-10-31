@@ -242,7 +242,7 @@ cq = types.ModuleType("cubo_quant"); exec(_CODIGO, cq.__dict__); sys.modules["cu
 import json, zipfile
 from diffusers import AutoPipelineForText2Image
 SEED, PROMPT = 5762, "Carro futurista correndo na chuva cyberpunk"
-BLOCO, BITS = (8, 8), 8
+BLOCO, BITS = (4, 4), 8      # 4x4 deu SSIM 0.963 (pior 0.940); 8x8 so 0.900 (pior 0.843)
 pipe = AutoPipelineForText2Image.from_pretrained("segmind/tiny-sd", torch_dtype=torch.float32)
 pipe.set_progress_bar_config(disable=True)
 if hasattr(pipe, "safety_checker"): pipe.safety_checker = None
