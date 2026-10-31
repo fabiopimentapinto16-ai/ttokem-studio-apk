@@ -1,6 +1,6 @@
 # TTOKEN - RASTREIA O QUE SOBRA: qual tensor causa a diferenca restante do 8 bits 4x4 e quanto custa proteger. tiny-sd REAL.
 # Quantiza UM tensor por vez (8 bits 4x4), mede quanto a saida do UNet muda, e ordena. Depois protege (fp16) os piores e
-# mede tamanho x qualidade (4 sementes). Gera tinysd_sensibilidade.json. Arquivo UNICO. ~20-25 min no Colab (CPU).
+# mede tamanho x qualidade (4 sementes). Gera tinysd_sensibilidade.json. Arquivo UNICO. ~25-30 min no Colab (CPU).
 # NAO FOI EXECUTADO AINDA (o sandbox onde escrevi nao tem torch): rode (~20-30 min) e me mande as tabelas.
 # Roda os MESMOS dados do seu teste (seed 5762, 256x256, 4 passos) e compara configuracoes que o
 # codec de cores nao testou: cubos pequenos, 4 bits com cubos finos, reordenar, e TODOS os
@@ -347,6 +347,56 @@ for n in rank:
     acum += efeito[n]; k += 1
     if acum >= 0.5 * total: break
 print("\n%d tensores (%.1f%% do peso) respondem por 50%% do erro." % (k, 100 * sum(alvo[n].numel() * 2 for n in rank[:k]) / fp16_total))
+
+# ---------------------------------------------------------------- POR QUE esses tensores sofrem?
+def qd(m, bloco, bits=8):
+    pk, es, R, C = cq.quantizar(m, bloco, bits)
+    return cq.desquantizar(pk, es, R, C, (R, C), bloco, bits=bits)
+def blocos4(a):                                   # (R,C) -> (nblocos, 16), sem enchimento complicado
+    R, C = a.shape; Rp, Cp = -(-R // 4) * 4, -(-C // 4) * 4
+    z = np.zeros((Rp, Cp), np.float32); z[:R, :C] = a
+    return z.reshape(Rp // 4, 4, Cp // 4, 4).transpose(0, 2, 1, 3).reshape(-1, 16), (Rp, Cp)
+def v_base(m): return qd(m, (4, 4))
+def v_2x2(m): return qd(m, (2, 2))
+def v_assim(m):
+    pk, es, mn, R, C = ck.quantizar_k(m, (4, 4), 8, False)
+    return ck.desquantizar_k(pk, es, mn, R, C, (R, C), (4, 4), 8)
+def v_piores(m):                                  # 1% dos blocos com maior erro voltam ao valor original
+    w = qd(m, (4, 4)); eb, (Rp, Cp) = blocos4((w - m) ** 2); soma = eb.sum(1)
+    ruim = soma >= np.quantile(soma, .99)
+    mask = np.repeat(np.repeat(ruim.reshape(Rp // 4, Cp // 4), 4, 0), 4, 1)[:m.shape[0], :m.shape[1]]
+    w = w.copy(); w[mask] = m[mask]; return w
+def v_colunas(m):
+    f = np.maximum(np.abs(m).max(0), 1e-8) ** 0.5; return qd(m / f, (4, 4)) * f
+def v_linhas(m):
+    f = np.maximum(np.abs(m).max(1, keepdims=True), 1e-8) ** 0.5; return qd(m / f, (4, 4)) * f
+VARS = (("base 4x4", v_base), ("2x2", v_2x2), ("assimetrico", v_assim), ("1% blocos piores->fp16", v_piores),
+        ("colunas equaliz.", v_colunas), ("linhas equaliz.", v_linhas))
+print("\n=== POR QUE? diagnostico dos 8 piores tensores ===")
+print("estatisticas: max/desvio = quao esticada e a cauda | blocos esticados = % de blocos 4x4 cujo maximo e >8x a mediana")
+print("              erro do 1% = % do erro de peso que vem de 1% dos blocos | EFEITO = erro na saida do UNet relativo ao base (menor = melhor)\n")
+venc = {}
+for n in rank[:8]:
+    m = orig[n].numpy().reshape(orig[n].shape[0], -1).astype(np.float32)
+    w0 = v_base(m); eb, _ = blocos4((w0 - m) ** 2); soma = np.sort(eb.sum(1))[::-1]
+    mb, _ = blocos4(np.abs(m)); mx = mb.max(1); med = max(float(np.median(mx)), 1e-12)
+    kurt = float(((m - m.mean()) ** 4).mean() / (m.var() ** 2 + 1e-30))
+    print("%s  forma %s" % (n[-60:], tuple(orig[n].shape)))
+    print("   max/desvio %.1f | curtose %.1f | blocos esticados %.1f%% | erro do 1%% = %.0f%% | SNR do peso %.1f dB"
+          % (np.abs(m).max() / (m.std() + 1e-12), kurt, 100 * float((mx > 8 * med).mean()),
+             100 * soma[:max(1, len(soma) // 100)].sum() / (soma.sum() + 1e-30), 10 * np.log10((m ** 2).mean() / (((w0 - m) ** 2).mean() + 1e-30))))
+    res = {}
+    for rot, f in VARS:
+        w = f(m); alvo[n].data = torch.from_numpy(w.reshape(orig[n].shape)).float()
+        res[rot] = erro_rel(saida_unet())
+    alvo[n].data = orig[n].clone()
+    base_e = res["base 4x4"]
+    print("   EFEITO relativo ao base: " + " | ".join("%s %.2f" % (r, res[r] / base_e) for r, _ in VARS))
+    melhor_v = min((r for r, _ in VARS if r != "base 4x4"), key=lambda r: res[r]); venc[melhor_v] = venc.get(melhor_v, 0) + 1
+print("\nQuem mais reduziu o erro nos 8 piores: " + ", ".join("%s (%dx)" % kv for kv in sorted(venc.items(), key=lambda kv: -kv[1])))
+print("Leitura: se '1% blocos piores' vence -> o problema sao poucos valores gigantes (guardar so eles em fp16);")
+print("         se 'colunas equaliz.' vence -> canais de entrada com escalas muito diferentes (equalizar canais, estilo AWQ);")
+print("         se '2x2' vence -> falta resolucao (cubo menor so nesses tensores); se nada ajuda -> o tensor e sensivel e fica em fp16.")
 
 # ordem de protecao: maior ganho por byte extra (fp16 custa 16 bits/peso contra 9 do 4x4)
 razao = sorted(alvo, key=lambda n: -efeito[n] / (alvo[n].numel() * 7 / 8))
