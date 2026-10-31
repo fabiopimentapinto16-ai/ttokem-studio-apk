@@ -106,24 +106,34 @@ def erro(original, recuperado):
 
 
 # ------------------------------------------------------------------ gravar
-def salvar(estado, caminho, bloco=(8, 8), bits=4, reordenar=False):
-    """estado: dict nome -> ndarray. Grava o .ttq (atomico). Devolve estatisticas."""
+def salvar(estado, caminho, bloco=(8, 8), bits=4, reordenar=False, receita=None):
+    """estado: dict nome -> ndarray. Grava o .ttq (atomico). Devolve estatisticas.
+    receita (opcional): dict nome -> "fp16" | ((bh, bw), bits). Permite um cubo/precisao DIFERENTE por tensor
+    (ex.: camadas sensiveis em fp16 ou 2x2, o resto em 4x4). Quem nao aparece usa (bloco, bits)."""
+    receita = receita or {}
     meta, blobs, pos = {}, [], 0
     bruto = 0
     for nome, arr in estado.items():
         arr = np.asarray(arr)
         bruto += arr.size * 4
-        if arr.ndim >= 2 and arr.size >= MIN_ELEMENTOS:
+        rec = receita.get(nome)
+        if rec == "fp16":
+            rec_bloco, rec_bits = None, None
+        else:
+            rec_bloco, rec_bits = (tuple(rec[0]), int(rec[1])) if rec else (tuple(bloco), bits)
+        if arr.ndim >= 2 and arr.size >= MIN_ELEMENTOS and rec != "fp16":
             m = arr.astype(np.float32).reshape(arr.shape[0], -1)
             pr = pc = None
             if reordenar:                                  # "resolve o cubo": agrupa parecidos
                 pr, pc = ordem_cubo(m)
                 m = m[pr][:, pc]
-            pack, esc, R, C = quantizar(m, bloco, bits)
+            pack, esc, R, C = quantizar(m, rec_bloco, rec_bits)
             dados = [pack.tobytes(), esc.tobytes()]
-            meta[nome] = {"modo": "q%d" % bits, "forma": list(arr.shape), "R": R, "C": C,
+            meta[nome] = {"modo": "q%d" % rec_bits, "forma": list(arr.shape), "R": R, "C": C,
                           "off": pos, "n": len(dados[0]),
                           "off_esc": pos + _alinha(len(dados[0])), "n_esc": len(dados[1])}
+            if rec:                                          # so grava por tensor quando a receita pediu
+                meta[nome]["bloco"], meta[nome]["bits"] = list(rec_bloco), rec_bits
             tamanho = _alinha(len(dados[0])) + _alinha(len(dados[1]))
             blobs.append((pos, dados[0])); blobs.append((meta[nome]["off_esc"], dados[1]))
             if pr is not None:
@@ -184,15 +194,17 @@ class Leitor:
         pack = np.frombuffer(self._mm, np.uint8, count=t["n"], offset=base + t["off"])
         esc = np.frombuffer(self._mm, np.float16, count=t["n_esc"] // 2,
                             offset=base + t["off_esc"])
-        bh, bw = self.bloco
+        bloco_t = tuple(t.get("bloco", self.bloco))
+        bits_t = int(t.get("bits", self.bits))
+        bh, bw = bloco_t
         esc = esc.reshape(_alinha(t["R"], bh) // bh, _alinha(t["C"], bw) // bw)
         if "off_pr" in t:                                    # desfaz a reordenacao do cubo
-            m = desquantizar(pack, esc, t["R"], t["C"], (t["R"], t["C"]), self.bloco, np.float32, self.bits)
+            m = desquantizar(pack, esc, t["R"], t["C"], (t["R"], t["C"]), bloco_t, np.float32, bits_t)
             pr = np.frombuffer(self._mm, np.uint32, count=t["R"], offset=base + t["off_pr"])
             pc = np.frombuffer(self._mm, np.uint32, count=t["C"], offset=base + t["off_pc"])
             ir, ic = np.argsort(pr), np.argsort(pc)
             return m[ir][:, ic].reshape(forma).astype(dtype, copy=False)
-        return desquantizar(pack, esc, t["R"], t["C"], forma, self.bloco, dtype, self.bits)
+        return desquantizar(pack, esc, t["R"], t["C"], forma, bloco_t, dtype, bits_t)
 
     def itens(self):
         for nome in self.meta:
