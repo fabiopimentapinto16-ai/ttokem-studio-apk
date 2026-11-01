@@ -51,3 +51,19 @@ def test_motor_le_receita_mista():
     P = mc.Pesos(cam)
     assert P("a.weight").shape == (40, 70) and P("b.weight").shape == (64, 8, 3, 3)
     P.fechar()
+
+
+def test_ler_filas_igual_a_ler_completo():
+    r = np.random.default_rng(5)
+    for forma, bloco, bits in (((97, 70), (4, 4), 8), ((50, 33), (8, 8), 8), ((64, 64), (4, 4), 4), ((40, 20), (2, 2), 8)):
+        w = r.standard_normal(forma).astype(np.float32)
+        cam = os.path.join(tempfile.mkdtemp(), "f.ttq")
+        cq.salvar({"w": w}, cam, bloco, bits)
+        with cq.Leitor(cam) as L:
+            completo = L.ler("w")
+            for filas in ([0], [forma[0] - 1], [3, 3, 60 % forma[0], 1], list(range(forma[0]))[::7]):
+                assert np.array_equal(L.ler_filas("w", filas), completo[filas])
+    cam = os.path.join(tempfile.mkdtemp(), "f.ttq")
+    cq.salvar({"b": np.random.randn(10, 4).astype(np.float32)}, cam, (4, 4), 8, receita={"b": "fp16"})
+    with cq.Leitor(cam) as L:
+        assert np.array_equal(L.ler_filas("b", [2, 5]), L.ler("b")[[2, 5]])

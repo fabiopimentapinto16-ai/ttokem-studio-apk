@@ -206,6 +206,31 @@ class Leitor:
             return m[ir][:, ic].reshape(forma).astype(dtype, copy=False)
         return desquantizar(pack, esc, t["R"], t["C"], forma, bloco_t, dtype, bits_t)
 
+    def ler_filas(self, nome, filas, dtype=np.float32):
+        """Le SO as linhas pedidas (ex.: 77 tokens de um embedding de 49408 linhas), sem desquantizar o tensor todo."""
+        filas = np.asarray(filas, np.int64).reshape(-1)
+        t = self.meta[nome]
+        forma = tuple(t["forma"])
+        base = self._ini
+        if t["modo"] == "f16":
+            d = np.frombuffer(self._mm, np.float16, count=int(np.prod(forma, dtype=np.int64)), offset=base + t["off"])
+            return d.reshape(forma[0], -1)[filas].astype(dtype)
+        bloco_t, bits_t = tuple(t.get("bloco", self.bloco)), int(t.get("bits", self.bits))
+        bh, bw = bloco_t
+        R, C = t["R"], t["C"]
+        nbw = _alinha(C, bw) // bw
+        por = nbw * bh * bw
+        if "off_pr" in t or (bits_t == 4 and por % 2):       # casos raros: le tudo
+            return self.ler(nome, dtype).reshape(R, -1)[filas]
+        pack = np.frombuffer(self._mm, np.uint8, count=t["n"], offset=base + t["off"])
+        esc = np.frombuffer(self._mm, np.float16, count=t["n_esc"] // 2, offset=base + t["off_esc"])
+        esc = esc.reshape(_alinha(R, bh) // bh, nbw)
+        bandas = {}
+        for a in np.unique(filas // bh):
+            ps = pack[a * por: (a + 1) * por] if bits_t == 8 else pack[a * por // 2: (a + 1) * por // 2]
+            bandas[int(a)] = desquantizar(ps, esc[a:a + 1], bh, C, (bh, C), bloco_t, np.float32, bits_t)
+        return np.stack([bandas[int(f // bh)][int(f % bh)] for f in filas]).astype(dtype, copy=False)
+
     def itens(self):
         for nome in self.meta:
             yield nome, self.ler(nome)
