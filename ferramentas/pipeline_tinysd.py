@@ -16,9 +16,12 @@ import struct
 import argparse
 import numpy as np
 
-_AQUI = os.path.dirname(os.path.abspath(__file__))
-if _AQUI not in sys.path:
-    sys.path.insert(0, _AQUI)
+try:
+    _AQUI = os.path.dirname(os.path.abspath(__file__))
+    if _AQUI not in sys.path:
+        sys.path.insert(0, _AQUI)
+except NameError:                    # embutido num arquivo unico (Colab): os modulos ja estao em sys.modules
+    pass
 import motor_cubico as mc            # noqa: E402
 import unet_tinysd as ut             # noqa: E402
 import clip_vae_tinysd as cv         # noqa: E402
