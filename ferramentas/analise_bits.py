@@ -41,33 +41,70 @@ def entropia_bits(q):
 
 
 def avaliar(m, bits, g, metodo):
-    """Devolve (bits_por_peso, ruido, sinal) para uma matriz m (R,C)."""
+    """Devolve (bits_por_peso, ruido, sinal) para uma matriz m (R,C). Mantida para compatibilidade."""
+    r = avaliar_ambos(m, bits, g, rot=(metodo == "hadamard"))
+    custo = r["base"] if metodo == "base" else r["entropia"]
+    return custo, r["ruido"], r["sinal"]
+
+
+def _entropia_rapida(q, bits):
+    """Entropia empirica via bincount (muito mais rapido que np.unique)."""
+    c = np.bincount((q.reshape(-1) + 2 ** (bits - 1)).astype(np.int64), minlength=2 ** bits).astype(np.float64)
+    p = c[c > 0] / c.sum()
+    return float(-(p * np.log2(p)).sum())
+
+
+def avaliar_ambos(m, bits, g, rot=False):
+    """Quantiza UMA vez e devolve custo 'base' (bits fixos), custo 'entropia', ruido e sinal."""
     b, (R, C) = _blocos(m, g)
-    rot = metodo == "hadamard"
     if rot:
         H = hadamard(g)
         b = b @ H.T
     q, rec = quantizar_bloco(b, bits)
     if rot:
         rec = rec @ H
+        b = b @ H
     rec, b = rec.reshape(R, -1)[:, :C], b.reshape(R, -1)[:, :C]
-    ruido, sinal = float(((m - rec) ** 2).sum()), float((m ** 2).sum())
-    custo = (bits if metodo == "base" else entropia_bits(q)) + 16.0 / g
-    return custo, ruido, sinal
+    esc = 16.0 / g
+    return {"base": bits + esc, "entropia": _entropia_rapida(q, bits) + esc,
+            "ruido": float(((m - rec) ** 2).sum()), "sinal": float((m ** 2).sum())}
 
 
-def varrer(tensores, grade, metodos=("base", "entropia", "hadamard")):
+def varrer(tensores, grade, metodos=("base", "entropia", "hadamard"), max_pesos=None, semente=0):
     """tensores: dict nome->ndarray (>=2D). grade: lista de (bits, g).
+    max_pesos: se dado, usa uma AMOSTRA de linhas (mesma fracao em todos os tensores) para ir mais rapido.
     Devolve linhas (metodo, bits, g, bits_por_peso, snr_db, vezes_menor_que_fp16)."""
+    total = sum(np.asarray(a).size for a in tensores.values())
+    frac = 1.0 if not max_pesos or total <= max_pesos else max_pesos / total
+    rng = np.random.RandomState(semente)
+    mats = []
+    for arr in tensores.values():
+        m = np.asarray(arr, np.float32).reshape(arr.shape[0], -1)
+        if frac < 1.0:
+            n = max(1, int(round(m.shape[0] * frac)))
+            m = m[np.sort(rng.choice(m.shape[0], n, replace=False))]
+        mats.append(m)
     linhas = []
-    for metodo in metodos:
-        for bits, g in grade:
-            tot_bits = tot_n = tot_r = tot_s = 0.0
-            for arr in tensores.values():
-                m = np.asarray(arr, np.float32).reshape(arr.shape[0], -1)
-                custo, r, s = avaliar(m, bits, g, metodo)
-                tot_bits += custo * m.size; tot_n += m.size; tot_r += r; tot_s += s
-            bpp = tot_bits / tot_n
-            snr = 10 * np.log10(tot_s / max(tot_r, 1e-30))
-            linhas.append((metodo, bits, g, bpp, snr, 16.0 / bpp))
+    for bits, g in grade:
+        for rot in (False, True):
+            if rot and "hadamard" not in metodos:
+                continue
+            if not rot and not ({"base", "entropia"} & set(metodos)):
+                continue
+            acc = {"base": 0.0, "entropia": 0.0, "ruido": 0.0, "sinal": 0.0}
+            n = 0
+            for m in mats:
+                r = avaliar_ambos(m, bits, g, rot)
+                for k in ("base", "entropia"):
+                    acc[k] += r[k] * m.size
+                acc["ruido"] += r["ruido"]; acc["sinal"] += r["sinal"]; n += m.size
+            snr = 10 * np.log10(acc["sinal"] / max(acc["ruido"], 1e-30))
+            if not rot:
+                for nome in ("base", "entropia"):
+                    if nome in metodos:
+                        bpp = acc[nome] / n
+                        linhas.append((nome, bits, g, bpp, snr, 16.0 / bpp))
+            else:
+                bpp = acc["entropia"] / n
+                linhas.append(("hadamard", bits, g, bpp, snr, 16.0 / bpp))
     return linhas
