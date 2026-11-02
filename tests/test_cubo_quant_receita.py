@@ -1,4 +1,4 @@
-import os, sys, tempfile
+import os, sys, tempfile, unittest
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ferramentas"))
 import cubo_quant as cq
@@ -67,3 +67,16 @@ def test_ler_filas_igual_a_ler_completo():
     cq.salvar({"b": np.random.randn(10, 4).astype(np.float32)}, cam, (4, 4), 8, receita={"b": "fp16"})
     with cq.Leitor(cam) as L:
         assert np.array_equal(L.ler_filas("b", [2, 5]), L.ler("b")[[2, 5]])
+
+
+class TestDesquantizarRapido(unittest.TestCase):
+    def test_identico_ao_lento(self):
+        import numpy as np, cubo_quant as cq
+        rng = np.random.RandomState(0)
+        for forma in ((64, 64), (37, 51), (320, 4, 3, 3), (7, 9)):
+            w = rng.randn(*forma).astype("f")
+            for bl in ((2, 2), (4, 4), (8, 8), (1, 32)):
+                pack, esc, R, C = cq.quantizar(w, bl, 8)
+                a = cq.desquantizar(pack, esc, R, C, forma, bl, np.float32, 8)
+                b = cq.desquantizar_rapido(pack, esc, R, C, forma, bl, np.float32)
+                self.assertTrue(np.array_equal(a, b), (forma, bl))
