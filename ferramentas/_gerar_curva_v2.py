@@ -58,7 +58,10 @@ alvo = {n: p for n, p in unet.named_parameters() if p.ndim >= 2 and p.numel() >=
 orig = {n: p.data.clone() for n, p in alvo.items()}
 names = list(alvo); N = len(names)
 numel = np.array([alvo[n].numel() for n in names], np.int64)
-base = {s: gerar(s) for s in SEEDS}
+print("0) gerando %d imagens de referencia (~1 min cada em CPU; sem mais nada na tela ate acabar) ..." % len(SEEDS), flush=True)
+base = {}
+for s_ in SEEDS:
+    base[s_] = gerar(s_); print("   referencia semente %d pronta" % s_, flush=True)
 
 def versao(n, op):
     m = orig[n].numpy().reshape(orig[n].shape[0], -1)
@@ -73,9 +76,11 @@ trilha, dono = [], []
 def _gancho(mod, args, kwargs, out):
     trilha.append((args[0].detach().clone(), args[1].detach().clone() if torch.is_tensor(args[1]) else torch.tensor(args[1]),
                    kwargs["encoder_hidden_states"].detach().clone(), out[0].detach().clone().numpy()))
+print("0b) gravando as chamadas reais do UNet (%d imagens) ..." % len(FIT_SEEDS), flush=True)
 for k_sd, sd in enumerate(FIT_SEEDS):
     h_ = unet.register_forward_hook(_gancho, with_kwargs=True)
     antes = len(trilha); gerar(sd); h_.remove(); dono += [k_sd] * (len(trilha) - antes)
+    print("   semente %d gravada" % sd, flush=True)
 POR_SEMENTE = len(trilha) // len(FIT_SEEDS)
 en = [float((o ** 2).sum()) for *_, o in trilha]
 def reproduzir(passos=None, sementes=None):
@@ -96,6 +101,7 @@ ruido = np.zeros((N, len(OPC)))
 for i, n in enumerate(names):
     for o, op in enumerate(OPC):
         w, m = versao(n, op); ruido[i, o] = float(((m - w) ** 2).sum())
+    if (i + 1) % 25 == 0: print("   %d/%d" % (i + 1, N), flush=True)
 print("   %.0f s" % (time.time() - t0))
 
 print("2) Sensibilidade de cada tensor (%s, um por vez, replay real) ... ~30 min" % NOME(OPC[REF]))
