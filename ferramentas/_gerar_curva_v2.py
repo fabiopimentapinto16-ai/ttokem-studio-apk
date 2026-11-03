@@ -8,7 +8,7 @@ corpo = r'''# TTOKEN - CURVA v2: ONDE A QUALIDADE QUEBRA quando se desce de 8 pa
 # 1) mede a sensibilidade REAL de cada tensor (replay das chamadas do UNet);  2) aloca bits por tensor (casco convexo + guloso)
 # em varios orcamentos (20% = 5x ... 56%);  3) valida em imagens com sementes que a medicao nao viu.
 # Tamanho = formula (bits + escala fp16 por cubo); se a fronteira for boa eu implemento o empacotamento de 3/5/6/7 bits no .ttq.
-# ~60-80 min em CPU. Rode numa celula. Me mande TODO o texto e tinysd_v2_comparacao.png.
+# ~40-50 min em CPU. MANTENHA A TELA LIGADA e a aba aberta (no celular, use 'Site para computador' e deixe a tela acesa). Rode numa celula. Me mande TODO o texto e tinysd_v2_comparacao.png.
 import os, sys, time, subprocess, json, types, zlib, base64
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "transformers", "accelerate", "scikit-image"])
 import numpy as np, torch
@@ -104,10 +104,19 @@ for i, n in enumerate(names):
     if (i + 1) % 25 == 0: print("   %d/%d" % (i + 1, N), flush=True)
 print("   %.0f s" % (time.time() - t0))
 
-print("2) Sensibilidade de cada tensor (%s, um por vez, replay real) ... ~30 min" % NOME(OPC[REF]))
-efeito = np.zeros(N)
-for i, n in enumerate(names):
-    aplicar(n, OPC[REF]); efeito[i] = reproduzir(passos=(0, 2), sementes=(0,)); alvo[n].data = orig[n].clone()
+print("2) Sensibilidade de cada tensor (%s, um por vez, replay real) ... ~15 min" % NOME(OPC[REF]))
+CK = "v2_ckpt.json"                       # checkpoint: se o Colab cair e o ambiente continuar, ele RETOMA daqui
+efeito = np.zeros(N); feito = 0
+try:
+    c = json.load(open(CK))
+    if c["names"] == names and c["ref"] == REF: efeito[:] = c["efeito"]; feito = c["feito"]; print("   RETOMANDO do tensor %d/%d" % (feito, N))
+except Exception:
+    pass
+for i in range(feito, N):
+    n = names[i]
+    aplicar(n, OPC[REF]); efeito[i] = reproduzir(passos=(1,), sementes=(0,)); alvo[n].data = orig[n].clone()   # 1 chamada (t medio)
+    if (i + 1) % 10 == 0:
+        json.dump({"names": names, "ref": REF, "efeito": efeito.tolist(), "feito": i + 1}, open(CK, "w"))
     if (i + 1) % 25 == 0: print("   %d/%d" % (i + 1, N), flush=True)
 print("   mais sensiveis: " + ", ".join(names[i][-32:] for i in np.argsort(-efeito)[:5]))
 err = (efeito[:, None] * ruido / np.maximum(ruido[:, [REF]], 1e-30))          # erro previsto de saida, tensor x opcao
