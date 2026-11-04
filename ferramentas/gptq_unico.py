@@ -2,9 +2,10 @@
 # GPTQ = quantiza coluna a coluna e COMPENSA o erro nas colunas seguintes usando as ativacoes REAIS do UNet (calibracao).
 # Compara, em imagens com sementes que a calibracao nao viu: RTN 4b, GPTQ 4b, GPTQ 3b, GPTQ 4b cubo 4x8,
 # e GPTQ com as camadas mais frageis protegidas em 8 bits. Tamanho = formula (bits + escala fp16 por cubo).
-# PRIMEIRO rode com RAPIDO = True (~10-15 min) para ver se nao ha erro; depois RAPIDO = False (~60-90 min).
+# RAPIDO = False: rodada completa (~60-90 min). RAPIDO = True: teste de fumaca (~10 min; so 11 camadas com GPTQ, NAO compara tamanhos).
+# conv_in/conv_out ficam SEMPRE em 8 bits 4x4 (minusculas e as mais sensiveis; GPTQ quase nao ajuda na conv_in).
 # Tela ligada, aba aberta (no celular: 'Site para computador').
-RAPIDO = True
+RAPIDO = False
 import os, sys, time, subprocess, json, types, zlib, base64
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "transformers", "accelerate", "scikit-image"])
 import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
@@ -160,10 +161,11 @@ def peso_da_cfg(cfg, n):
     return gq.rtn(mat(n), c[1], c[2])
 def bpp_cfg(c): return 16.0 if c[0] == "fp16" else (BPP(*OPTS[c[1]]) if c[0] == "gptq" else BPP(c[1], c[2]))
 def tamanho(cfg): return sum(numel[n] * bpp_cfg(cfg[n]) for n in names) / (16.0 * TOTAL)
+SEMPRE8 = {n for n in names if n.startswith("conv_in") or n.startswith("conv_out")}
 def cfg_base(tipo, op=None, bl=None, b=None):
     cfg = {}
     for n in names:
-        if n in RASO or (tipo == "gptq" and n not in QS[op]): cfg[n] = ("rtn", (4, 4), 8)
+        if n in RASO or n in SEMPRE8 or (tipo == "gptq" and n not in QS[op]): cfg[n] = ("rtn", (4, 4), 8)
         else: cfg[n] = ("gptq", op) if tipo == "gptq" else ("rtn", bl, b)
     return cfg
 def proteger(cfg, op, alvo_tam):
