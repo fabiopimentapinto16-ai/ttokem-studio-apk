@@ -158,11 +158,21 @@ def n_prot(cfg): return sum(1 for n in names if cfg[n][0] == "rtn" and cfg[n][1]
 
 CONFIGS = [("RTN 4b 4x16 (sem GPTQ)", cfg_base("rtn", bl=(4, 16), b=4)), ("GPTQ 4b 4x16", cfg_base("gptq", "g4")),
            ("GPTQ 3b 4x16", cfg_base("gptq", "g3"))]
+def adaptativo(T):
+    """Cada camada fica na opcao MAIS BARATA cujo erro de saida medido (GPTQ) ainda e >= T dB; senao 8 bits 4x4."""
+    cfg = {}
+    for n in names:
+        if n in RASO or n not in QS["g4"]: cfg[n] = ("rtn", (4, 4), 8); continue
+        db = lambda o: -10 * np.log10(max(ES[o][n], 1e-30))
+        cfg[n] = ("gptq", "g3") if db("g3") >= T else (("gptq", "g4") if db("g4") >= T else ("rtn", (4, 4), 8))
+    return cfg
 if not RAPIDO:
     CONFIGS += [("GPTQ 4b 4x8", cfg_base("gptq", "g4b")),
                 ("GPTQ 4b + protege(8b) <=30%", proteger(cfg_base("gptq", "g4"), "g4", 0.30)),
                 ("GPTQ 3b + protege(8b) <=25%", proteger(cfg_base("gptq", "g3"), "g3", 0.25)),
-                ("GPTQ 3b + protege(8b) <=30%", proteger(cfg_base("gptq", "g3"), "g3", 0.30))]
+                ("GPTQ 3b + protege(8b) <=30%", proteger(cfg_base("gptq", "g3"), "g3", 0.30)),
+                ("GPTQ adaptativo T=24 dB", adaptativo(24.0)), ("GPTQ adaptativo T=28 dB", adaptativo(28.0)),
+                ("GPTQ adaptativo T=32 dB", adaptativo(32.0))]
 print("\n3) IMAGENS (%d sementes novas)" % len(SEEDS))
 print("%-30s %7s %6s | %6s %7s %6s | camadas em 8b" % ("configuracao", "% fp16", "x fp16", "PSNR", "SSIM", "pior"))
 res, imagens = {}, {}
