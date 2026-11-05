@@ -41,8 +41,8 @@ from diffusers import AutoPipelineForText2Image
 PROMPT, STEPS, SIZE = "Carro futurista correndo na chuva cyberpunk", 4, 256
 FIT_SEEDS = (1,) if RAPIDO else (5762, 1, 11, 12, 13)     # calibracao (trajetorias reais do UNet)
 SEEDS = (3,) if RAPIDO else (3, 4, 5)                       # validacao: sementes que a calibracao NAO viu
-CHUNK = 4096                                                # Hessiana em blocos diagonais de ate 4096 colunas
-OPTS = {"g4": ((4, 16), 4), "g3": ((4, 16), 3)} if RAPIDO else {"g4": ((4, 16), 4), "g3": ((4, 16), 3), "g4b": ((4, 8), 4)}
+CHUNK = 2048                                                # Hessiana em blocos diagonais de ate 2048 colunas (menos RAM e tempo)
+OPTS = {"g4": ((4, 16), 4), "g3": ((4, 16), 3)}
 BPP = lambda bl, b: b + 16.0 / (bl[0] * bl[1])
 pipe = AutoPipelineForText2Image.from_pretrained("segmind/tiny-sd", torch_dtype=torch.float32)
 pipe.set_progress_bar_config(disable=True)
@@ -91,10 +91,10 @@ for sd in FIT_SEEDS:
 
 GQ_NOMES = names[::15] if RAPIDO else names               # no modo rapido so algumas camadas usam GPTQ
 def custo_H(n): C = int(np.prod(alvo[n][0].shape[1:])); return C * min(C, CHUNK) * 4
-ordem = sorted(GQ_NOMES, key=lambda n: -custo_H(n))
+ordem = sorted(GQ_NOMES, key=custo_H)                       # pequenas primeiro: o progresso aparece cedo
 passes, atual, usado = [], [], 0
 for n in ordem:
-    if atual and usado + custo_H(n) > 3e9: passes.append(atual); atual, usado = [], 0
+    if atual and usado + custo_H(n) > 1.5e9: passes.append(atual); atual, usado = [], 0
     atual.append(n); usado += custo_H(n)
 if atual: passes.append(atual)
 print("1) Hessianas em %d passada(s) pelo UNet; GPTQ em %d camadas x %d opcoes ..." % (len(passes), len(GQ_NOMES), len(OPTS)), flush=True)
@@ -128,22 +128,43 @@ def erro_rtn_blocos(W, Q, Hb):
     return num / max(den, 1e-30)
 
 QS = {o: {} for o in OPTS}; ES = {o: {} for o in OPTS}; ER = {o: {} for o in OPTS}; RASO = set()
+import resource
+ram = lambda: resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+CACHE = "gptq_cache"; os.makedirs(CACHE, exist_ok=True)          # se o Colab cair e o disco continuar, RETOMA daqui
+_arq = lambda n: os.path.join(CACHE, n.replace("/", "_") + ".npz")
+def _carregar(n):
+    if not os.path.exists(_arq(n)): return False
+    try:
+        z = np.load(_arq(n))
+        if bool(z["raso"]): RASO.add(n); return True
+        for o in OPTS: QS[o][n] = z["Q_" + o]; ES[o][n] = float(z["e_" + o]); ER[o][n] = float(z["r_" + o])
+        return True
+    except Exception:
+        return False
 feitas, t0 = 0, time.time()
 for gi, grupo in enumerate(passes):
-    H, cnt = coletar(grupo)
-    print("   passada %d/%d: Hessianas prontas (%.0f s)" % (gi + 1, len(passes), time.time() - t0), flush=True)
-    for n in grupo:
-        W = mat(n); C = W.shape[1]
+    pend = [n for n in grupo if not _carregar(n)]
+    feitas += len(grupo) - len(pend)
+    if not pend:
+        print("   passada %d/%d: ja estava em cache" % (gi + 1, len(passes)), flush=True); continue
+    H, cnt = coletar(pend)
+    print("   passada %d/%d: Hessianas prontas (%.0f s, RAM pico %.0f MB)" % (gi + 1, len(passes), time.time() - t0, ram()), flush=True)
+    for n in pend:
+        tl = time.time(); W = mat(n); C = W.shape[1]
         if cnt[n] < min(C, CHUNK) / 2:                      # amostras demais poucas para GPTQ: cai para 8 bits
-            RASO.add(n); continue
+            RASO.add(n); np.savez(_arq(n), raso=True); feitas += 1; continue
         Hb = [(h / cnt[n]).numpy().astype(np.float64) for h in H[n]]
         pre = [gq.preparar(h) for h in Hb]                    # inversa da Hessiana: UMA vez por camada, serve para todas as opcoes
+        dados = {"raso": False}
         for o, (bl, b) in OPTS.items():
             Q, e, S = gq.gptq_blocos(W, Hb, CHUNK, pre=pre, bloco=bl, bits=b)
             QS[o][n] = Q.astype(np.float16); ES[o][n] = e
             ER[o][n] = erro_rtn_blocos(W, gq.rtn(W, bl, b), Hb)
+            dados["Q_" + o] = QS[o][n]; dados["e_" + o] = ES[o][n]; dados["r_" + o] = ER[o][n]
+        np.savez(_arq(n), **dados)
+        del Hb, pre
         feitas += 1
-        if feitas % 10 == 0 or feitas == len(GQ_NOMES): print("   GPTQ %d/%d camadas (%.0f s)" % (feitas, len(GQ_NOMES), time.time() - t0), flush=True)
+        print("   GPTQ %3d/%d  %-52s %6.1f s  (total %.0f s, RAM pico %.0f MB)" % (feitas, len(GQ_NOMES), n[-52:], time.time() - tl, time.time() - t0, ram()), flush=True)
     del H
 print("   camadas com poucas amostras (usam 8 bits 4x4): %d" % len(RASO), flush=True)
 
@@ -188,8 +209,7 @@ def adaptativo(T):
         cfg[n] = ("gptq", "g3") if db("g3") >= T else (("gptq", "g4") if db("g4") >= T else ("rtn", (4, 4), 8))
     return cfg
 if not RAPIDO:
-    CONFIGS += [("GPTQ 4b 4x8", cfg_base("gptq", "g4b")),
-                ("GPTQ 4b + protege(8b) <=30%", proteger(cfg_base("gptq", "g4"), "g4", 0.30)),
+    CONFIGS += [("GPTQ 4b + protege(8b) <=30%", proteger(cfg_base("gptq", "g4"), "g4", 0.30)),
                 ("GPTQ 3b + protege(8b) <=25%", proteger(cfg_base("gptq", "g3"), "g3", 0.25)),
                 ("GPTQ 3b + protege(8b) <=30%", proteger(cfg_base("gptq", "g3"), "g3", 0.30)),
                 ("GPTQ adaptativo T=24 dB", adaptativo(24.0)), ("GPTQ adaptativo T=28 dB", adaptativo(28.0)),
