@@ -5,7 +5,7 @@ src = {"cubo_quant": open(os.path.join(aqui, "cubo_quant.py"), encoding="utf-8")
 b64 = base64.b64encode(zlib.compress(json.dumps(src).encode("utf-8"), 9)).decode()
 emb = "_PAC = (\n" + "\n".join('    "%s"' % b64[i:i + 100] for i in range(0, len(b64), 100)) + "\n)\n"
 corpo = r'''# TTOKEN - UNet do SDXS em 8 bits 1x8 (SSIM 0,931 contra 0,911 do 4x4). Sem GPU. Gera sdxs_unet_q8.ttq (~395 MB).
-# Depois: baixe o arquivo e COLOQUE NA PASTA sdxs_cubo do celular, substituindo o sdxs_unet_q8.ttq antigo.
+# Salva no seu Google Drive (Meu Drive > sdxs_cubo). Depois baixe pelo app Drive e COLOQUE NA PASTA sdxs_cubo do celular.
 import os, sys, types, json, zlib, base64, subprocess
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "transformers", "accelerate"])
 import numpy as np, torch
@@ -18,10 +18,16 @@ est = {k: v.detach().float().numpy() for k, v in unet.state_dict().items() if v.
 r = cq.salvar(est, "sdxs_unet_q8.ttq", (1, 8), 8)
 mb = os.path.getsize("sdxs_unet_q8.ttq") / 1e6
 print("sdxs_unet_q8.ttq: %.1f MB (esperado ~395 MB, 8 bits 1x8)" % mb)
-try:
-    from google.colab import files; files.download("sdxs_unet_q8.ttq")
-except Exception:
-    print("Baixe sdxs_unet_q8.ttq pelo painel de arquivos do Colab.")
+import shutil
+try:                                    # download direto de 395 MB costuma travar: salva no Google Drive
+    from google.colab import drive
+    drive.mount("/content/drive")
+    os.makedirs("/content/drive/MyDrive/sdxs_cubo", exist_ok=True)
+    shutil.copy("sdxs_unet_q8.ttq", "/content/drive/MyDrive/sdxs_cubo/sdxs_unet_q8.ttq")
+    print("PRONTO: salvo no seu Google Drive em  Meu Drive > sdxs_cubo > sdxs_unet_q8.ttq")
+    print("No celular: abra o app Google Drive, toque nos 3 pontinhos do arquivo > Fazer download.")
+except Exception as e:
+    print("Nao deu para usar o Drive (%s). Baixe pelo painel de arquivos do Colab (icone de pasta)." % e)
 '''
 open(os.path.join(aqui, "colab_sdxs_unet18.py"), "w", encoding="utf-8").write(corpo)
 print("ok")
