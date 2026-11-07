@@ -69,6 +69,17 @@ def pesos_sdxs(rng):
     return e
 
 
+class TestConvDesl(unittest.TestCase):
+    def test_igual_ao_conv2d(self):
+        rng = np.random.RandomState(3)
+        for C, O, H, W in ((4, 64, 8, 8), (64, 64, 17, 13), (3, 3, 5, 40), (64, 3, 9, 9)):
+            x = rng.randn(C, H, W).astype(np.float32); w = (rng.randn(O, C, 3, 3) * 0.1).astype(np.float32)
+            b = rng.randn(O).astype(np.float32)
+            for bloco in (7, 64, 4096):
+                np.testing.assert_allclose(mc.conv2d_desl(x, w, b, bloco), mc.conv2d(x, w, b, pad=1), atol=2e-5)
+            np.testing.assert_allclose(mc.conv2d_desl(x, w), mc.conv2d(x, w, pad=1), atol=2e-5)
+
+
 class TestSDXS(unittest.TestCase):
     def test_unet_usa_todos_os_pesos_e_forma(self):
         rng = np.random.RandomState(0)

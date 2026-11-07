@@ -19,7 +19,7 @@ def _relu(x):
 
 def _conv(x, P, nome):
     b = P(nome + ".bias") if P.tem(nome + ".bias") else None
-    return mc.conv2d(x, P(nome + ".weight"), b, pad=1)
+    return mc.conv2d_desl(x, P(nome + ".weight"), b)         # 2-3x mais rapida que conv2d com 64 canais
 
 
 def _bloco(x, P, p):
