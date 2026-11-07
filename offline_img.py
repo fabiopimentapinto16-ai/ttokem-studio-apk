@@ -25,12 +25,45 @@ def achar_pasta():
     return None
 
 
+def tem_acesso():
+    """Android 11+: ler arquivos da pasta Download exige 'acesso a todos os arquivos'. Fora do Android: True."""
+    try:
+        from jnius import autoclass
+        if autoclass("android.os.Build$VERSION").SDK_INT < 30:
+            return True
+        return bool(autoclass("android.os.Environment").isExternalStorageManager())
+    except Exception:
+        return True
+
+
+def abrir_ajustes_acesso():
+    """Abre a tela do Android onde o usuario liga 'Permitir acesso a todos os arquivos' para este app."""
+    try:
+        from jnius import autoclass
+        PA = autoclass("org.kivy.android.PythonActivity")
+        Intent = autoclass("android.content.Intent")
+        Settings = autoclass("android.provider.Settings")
+        Uri = autoclass("android.net.Uri")
+        act = PA.mActivity
+        try:
+            it = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+            it.setData(Uri.parse("package:" + act.getPackageName()))
+            act.startActivity(it)
+        except Exception:
+            act.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        return True
+    except Exception:
+        return False
+
+
 def disponivel():
     """(ok, motivo). ok=True se numpy existe e os modelos estao no celular."""
     try:
         import numpy  # noqa: F401
     except Exception:
         return False, "numpy nao esta neste app"
+    if not tem_acesso():
+        return False, "sem_acesso"
     if achar_pasta() is None:
         return False, "pasta sdxs_cubo nao encontrada em Download"
     return True, ""

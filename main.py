@@ -1789,6 +1789,7 @@ class TtokenApp(App):
             self._est_msg("✍️ Escreva o que voce quer ver (em ingles funciona melhor).")
             return
         self._est_msg("🖼️ Imagem offline: ~40 s no celular, sem internet. Aguarde...")
+        self._motor(True)
         threading.Thread(target=self._est_img_offline_thread, args=(prompt,), daemon=True).start()
 
     def _est_img_offline_thread(self, prompt):
@@ -1797,7 +1798,13 @@ class TtokenApp(App):
             import offline_img
             ok, motivo = offline_img.disponivel()
             if not ok:
-                self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
+                self._ui(self._motor, False)
+                if motivo == "sem_acesso":
+                    self._ui(self._est_msg, "🔐 Falta uma permissao: abri a tela do Android. Ligue "
+                             "'Permitir acesso a todos os arquivos' para o Ttoken e volte aqui.")
+                    self._ui(offline_img.abrir_ajustes_acesso)
+                else:
+                    self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
             saida = os.path.join(self._pasta_dados(), "ttoken_img_%s.png" %
                                  time.strftime("%Y%m%d_%H%M%S"))
@@ -1805,6 +1812,7 @@ class TtokenApp(App):
                                   log=lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
+            self._ui(self._motor, False)
             self._ui(self._est_msg, "⚠️ Nao consegui gerar offline: %s" % str(e)[:90])
 
     def _est_video_cenas(self, *_):
@@ -1813,6 +1821,7 @@ class TtokenApp(App):
             self._est_msg("✍️ Escreva 1 cena por linha (ate 8). Ex.: a red apple on a table")
             return
         self._est_msg("🎬 Video de cenas offline: %d cenas, ~40 s cada, sem internet. Aguarde..." % len(cenas))
+        self._motor(True)
         threading.Thread(target=self._est_video_cenas_thread, args=(cenas,), daemon=True).start()
 
     def _est_video_cenas_thread(self, cenas):
@@ -1823,7 +1832,13 @@ class TtokenApp(App):
             import tts_android
             ok, motivo = offline_img.disponivel()
             if not ok:
-                self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
+                self._ui(self._motor, False)
+                if motivo == "sem_acesso":
+                    self._ui(self._est_msg, "🔐 Falta uma permissao: abri a tela do Android. Ligue "
+                             "'Permitir acesso a todos os arquivos' para o Ttoken e volte aqui.")
+                    self._ui(offline_img.abrir_ajustes_acesso)
+                else:
+                    self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
@@ -1841,6 +1856,7 @@ class TtokenApp(App):
             tem_voz = any(wavs)
             self._ui(self._est_video_cenas_fim, gif, narr if tem_voz else "", tem_voz)
         except Exception as e:
+            self._ui(self._motor, False)
             self._ui(self._est_msg, "⚠️ Nao consegui montar o video: %s" % str(e)[:90])
 
     def _est_video_cenas_fim(self, gif, narr, tem_voz):

@@ -9,7 +9,7 @@ version = 1.22.0
 requirements = python3,kivy==2.3.0,numpy,pillow,requests,urllib3,idna,charset-normalizer,certifi,pyjnius,android,androidstorage4kivy
 orientation = portrait
 fullscreen = 0
-android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO,POST_NOTIFICATIONS
+android.permissions = INTERNET,ACCESS_NETWORK_STATE,RECORD_AUDIO,POST_NOTIFICATIONS,MANAGE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 android.api = 33
 android.minapi = 21
 android.ndk = 25b
