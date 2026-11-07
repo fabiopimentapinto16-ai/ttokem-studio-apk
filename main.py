@@ -1620,6 +1620,9 @@ class TtokenApp(App):
         anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
         anim.bind(on_release=lambda w: self._est_pegar_foto_animar())
         self.est_chat.add_widget(anim)
+        vid_off = Chip("VIDEO DE CENAS OFFLINE (1 cena por linha, com voz)", height=40)
+        vid_off.bind(on_release=self._est_video_cenas)
+        self.est_chat.add_widget(vid_off)
         img_off = Chip("GERAR IMAGEM OFFLINE (sem internet, gratis)", height=40)
         img_off.bind(on_release=self._est_img_offline)
         self.est_chat.add_widget(img_off)
@@ -1786,6 +1789,60 @@ class TtokenApp(App):
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
             self._ui(self._est_msg, "⚠️ Nao consegui gerar offline: %s" % str(e)[:90])
+
+    def _est_video_cenas(self, *_):
+        cenas = [l.strip() for l in (self.est_inp.text or "").splitlines() if len(l.strip()) >= 3][:8]
+        if not cenas:
+            self._est_msg("✍️ Escreva 1 cena por linha (ate 8). Ex.: a red apple on a table")
+            return
+        self._est_msg("🎬 Video de cenas offline: %d cenas, ~40 s cada, sem internet. Aguarde..." % len(cenas))
+        threading.Thread(target=self._est_video_cenas_thread, args=(cenas,), daemon=True).start()
+
+    def _est_video_cenas_thread(self, cenas):
+        """Roda em thread: cada linha -> imagem (SDXS) -> GIF com camera, legenda e narracao (voz do Android)."""
+        try:
+            import offline_img
+            import video_cenas
+            import tts_android
+            ok, motivo = offline_img.disponivel()
+            if not ok:
+                self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
+                return
+            pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
+            os.makedirs(pasta, exist_ok=True)
+            imgs = []
+            for i, c in enumerate(cenas):
+                self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c[:50]))
+                imgs.append(offline_img.gerar_png(c, os.path.join(pasta, "cena_%02d.png" % i), semente=i + 1, lado=256))
+            self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
+            wavs = tts_android.sintetizar(cenas, pasta, idioma=("pt-BR" if self.idioma.startswith("Port") else "en-US"))
+            narr = os.path.join(pasta, "narracao.wav")
+            durs = video_cenas.juntar_wavs(wavs, narr)
+            self._ui(self._est_msg, "🎞️ Montando o video...")
+            gif, tot = video_cenas.montar(imgs, cenas, os.path.join(pasta, "video_cenas.gif"), durs,
+                                          semente=cenas[0])
+            tem_voz = any(wavs)
+            self._ui(self._est_video_cenas_fim, gif, narr if tem_voz else "", tem_voz)
+        except Exception as e:
+            self._ui(self._est_msg, "⚠️ Nao consegui montar o video: %s" % str(e)[:90])
+
+    def _est_video_cenas_fim(self, gif, narr, tem_voz):
+        self._est_fim({"arquivo": gif, "url": "", "origem": "celular"})
+        if tem_voz:
+            b = Chip("OUVIR NARRACAO (toque junto com o video)", height=40)
+            b.bind(on_release=lambda w: self._tocar_wav(narr))
+            self.est_res.add_widget(b)
+        else:
+            self._est_msg("ℹ️ Sem voz offline neste celular: o video saiu so com legenda.")
+
+    def _tocar_wav(self, caminho):
+        try:
+            from kivy.core.audio import SoundLoader
+            snd = SoundLoader.load(caminho)
+            if snd:
+                snd.play()
+        except Exception as e:
+            self._est_msg("⚠️ Nao consegui tocar o audio: %s" % str(e)[:60])
 
     def _est_animar_foto(self, caminho):
         """Roda em thread: foto -> GIF com zoom/pan (animador.py), tudo no celular."""
