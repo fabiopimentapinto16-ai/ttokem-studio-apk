@@ -24,14 +24,17 @@ try:
 except Exception:
     ram = lambda: float("nan")
 
+def completo(d):                                      # so vale a pasta com TUDO (um .ttq solto em Download nao serve)
+    return (os.path.exists(os.path.join(d, "sdxs_unet_q8.ttq")) and os.path.exists(os.path.join(d, "sdxs_texto_q8.ttq"))
+            and os.path.exists(os.path.join(d, "sdxs_vae_fp16.ttq"))
+            and (os.path.exists(os.path.join(d, "tokenizer.json")) or os.path.exists(os.path.join(d, "tok", "tokenizer.json"))))
 def achar():
-    alvo = "sdxs_unet_q8.ttq"
     cands = [PASTA] if PASTA else []
     try: cands.append(os.path.dirname(os.path.abspath(__file__)))
     except NameError: pass
     cands.append(os.getcwd())
     for c in cands:
-        if c and os.path.exists(os.path.join(c, alvo)): return c
+        if c and completo(c): return c
     raizes = [c for c in cands if c] + ["/storage/emulated/0", "/sdcard", os.path.expanduser("~")]
     visto = set()
     for r in raizes:                                   # procura nas subpastas (o zip extraido cria uma pasta propria)
@@ -39,9 +42,9 @@ def achar():
         visto.add(r); base = r.rstrip("/").count("/")
         for d, subs, arqs in os.walk(r):
             if d.count("/") - base >= 4: subs[:] = []
-            if alvo in arqs: return d
+            if "sdxs_unet_q8.ttq" in arqs and completo(d): return d
     print("Procurei em:", ", ".join(sorted(visto)))
-    raise SystemExit("Nao achei %s. Confira se o zip foi EXTRAIDO e se o Pydroid tem permissao de arquivos; ou ajuste PASTA no topo." % alvo)
+    raise SystemExit("Nao achei a pasta COMPLETA (3 arquivos .ttq + tokenizer.json). Ajuste PASTA no topo, ex.: PASTA = '/storage/emulated/0/Download/sdxs_cubo'")
 pasta = achar(); print("pasta:", pasta)
 try: mc.relatorio_aparelho()
 except Exception as ex: print("(sem relatorio do aparelho: %s)" % ex)

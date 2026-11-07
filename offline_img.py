@@ -7,16 +7,21 @@ _AQUI = os.path.dirname(os.path.abspath(__file__))
 _MOT = os.path.join(_AQUI, "motor_offline")
 
 
+def _completa(p):
+    f = lambda n: os.path.isfile(os.path.join(p, n))
+    return (f("sdxs_texto_q8.ttq") and f("sdxs_vae_fp16.ttq") and (f("sdxs_unet_q8.ttq") or f("sdxs_unet_curva.ttq"))
+            and (f("tokenizer.json") or os.path.isfile(os.path.join(p, "tok", "tokenizer.json"))))
+
+
 def achar_pasta():
-    """Procura a pasta com sdxs_unet_q8.ttq nos lugares comuns do celular."""
+    """Procura a pasta COMPLETA (3 .ttq + tokenizer) nos lugares comuns do celular."""
     base = ["/storage/emulated/0/Download", "/sdcard/Download", "/storage/emulated/0",
             os.path.expanduser("~"), os.getcwd()]
     for b in base:
         for sub in ("sdxs_cubo", "sdxs", ""):
             p = os.path.join(b, sub) if sub else b
-            for ar in ("sdxs_unet_q8.ttq", "sdxs_unet_curva.ttq"):
-                if os.path.isfile(os.path.join(p, ar)):
-                    return p
+            if _completa(p):
+                return p
     return None
 
 
