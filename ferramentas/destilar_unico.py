@@ -19,18 +19,28 @@ dev = "cuda"
 from diffusers import AutoPipelineForText2Image
 
 STEPS_INF, SIZE, LOTE = 4, 256, 2
-PROMPTS_TREINO = [
-    "a futuristic car racing in the rain, cyberpunk city", "a red apple on a wooden table", "a cat sleeping on a sofa",
-    "a snowy mountain at sunrise", "a bowl of ramen with steam", "a portrait of an old fisherman, dramatic light",
-    "a small house in a green forest, watercolor", "an astronaut riding a horse on mars", "a bouquet of sunflowers in a vase",
-    "a lighthouse on a cliff during a storm", "a robot reading a book in a library", "a steaming cup of coffee, macro photo",
-    "a colorful hot air balloon over a valley", "a medieval castle on a hill, golden hour", "a dog running on a beach",
-    "a neon sign in a dark alley", "a bicycle leaning on a brick wall", "a spaceship above a desert planet",
-    "a plate of sushi, top view", "a dragon flying over the sea", "a cozy cabin with a fireplace, oil painting",
-    "a city skyline at night, long exposure", "a field of lavender at sunset", "a pirate ship in a bottle"]
+N_PROMPTS = 300          # v1 usou so 24 prompts: a perda de treino caiu 14x mas o teste quase nao mexeu (decorou). Agora ~300.
+_SUJ = ["a red apple", "a cat", "a dog", "an old fisherman", "a robot", "a dragon", "a lighthouse", "a castle", "a spaceship",
+        "a bicycle", "a bowl of ramen", "a cup of coffee", "a bouquet of flowers", "a sailing ship", "a horse", "an astronaut",
+        "a small house", "a mountain", "a city street", "a car", "a bird", "a violin", "a lantern", "a bridge", "a windmill",
+        "a fox", "a tree", "a train", "a market stall", "a girl with a hat", "a wolf", "a tractor", "a teapot", "a statue"]
+_LUG = ["on a wooden table", "in a snowy forest", "at sunrise", "during a storm", "in a dark alley", "by the sea",
+        "in a desert", "on mars", "in a library", "under the stars", "in a green valley", "at golden hour", "in the rain",
+        "on a cliff", "in a field of flowers", "inside a cozy cabin", "above the clouds", "in an old town", "on a lake",
+        "in a neon city"]
+_EST = ["watercolor", "oil painting", "macro photo", "cyberpunk", "studio lighting", "pencil sketch", "cinematic",
+        "pixel art", "long exposure", "soft light", "dramatic light", "top view", "fantasy art", "vintage photo"]
+def _montar_prompts(n, semente):
+    r = random.Random(semente); fora = set(); res = []
+    while len(res) < n:
+        p = "%s %s, %s" % (r.choice(_SUJ), r.choice(_LUG), r.choice(_EST))
+        if p not in fora: fora.add(p); res.append(p)
+    return res
+PROMPTS_TREINO = _montar_prompts(N_PROMPTS, 123)
+PROMPTS_VAL = [p for p in _montar_prompts(40, 999) if p not in PROMPTS_TREINO][:8]   # perda de validacao durante o treino
 PROMPTS_TESTE = ["a futuristic city street with flying cars at dusk", "a wooden boat on a calm lake in the morning",
                  "a bowl of fresh strawberries on a white table", "a lion resting under a tree, savannah"]
-SEM_TREINO, SEM_TESTE = (1, 2, 3), (7, 8)
+SEM_TREINO, SEM_TESTE = (1, 2), (7, 8)
 
 pipe = AutoPipelineForText2Image.from_pretrained("segmind/tiny-sd", torch_dtype=torch.float32).to(dev)
 pipe.set_progress_bar_config(disable=True)
@@ -53,19 +63,24 @@ def ssim(a, b):
 
 # ------------------------------------------------------------------ dados: chamadas reais do UNet (professor)
 print("0) referencias e chamadas reais do UNet ...", flush=True)
-DADOS = []
+DADOS, VAL = [], []
+_ALVO = [DADOS]
 def _gancho(mod, args, kwargs, out):
     x = args[0].detach().cpu()
     t = torch.as_tensor(args[1]).detach().cpu().reshape(-1).expand(x.shape[0]).clone()
-    DADOS.append((x, t, kwargs["encoder_hidden_states"].detach().cpu()))
+    _ALVO[0].append((x, t, kwargs["encoder_hidden_states"].detach().cpu().half()))   # [incondicional, condicional]
+t0_ = time.time()
 with torch.no_grad():
     h_ = teacher.register_forward_hook(_gancho, with_kwargs=True)
-    for p in PROMPTS_TREINO:
+    for i_, p in enumerate(PROMPTS_TREINO):
         for s in SEM_TREINO: gerar(p, s)
+        if (i_ + 1) % 50 == 0: print("   %d/%d prompts (%.0f s)" % (i_ + 1, len(PROMPTS_TREINO), time.time() - t0_), flush=True)
+    _ALVO[0] = VAL
+    for p in PROMPTS_VAL: gerar(p, 5)
     h_.remove()
     BASE = {(p, s): gerar(p, s) for p in PROMPTS_TESTE for s in SEM_TESTE}
-print("   %d chamadas de treino, %d imagens de referencia (prompts de teste nunca vistos no treino)"
-      % (len(DADOS), len(BASE)), flush=True)
+print("   %d chamadas de treino, %d de validacao, %d imagens de referencia (prompts de teste/validacao NUNCA vistos no treino)"
+      % (len(DADOS), len(VAL), len(BASE)), flush=True)
 
 
 # ------------------------------------------------------------------ camada em cubos (fake-quant com STE)
@@ -154,11 +169,33 @@ def instalar(unet, rank):
     return cubos
 
 
-def dados_lote():
-    idx = random.sample(range(len(DADOS)), LOTE)
-    x = torch.cat([DADOS[i][0] for i in idx]).to(dev); t = torch.cat([DADOS[i][1] for i in idx]).to(dev)
-    e = torch.cat([DADOS[i][2] for i in idx]).to(dev)
+def dados_lote(fonte=None, idx=None):
+    fonte = DADOS if fonte is None else fonte
+    idx = random.sample(range(len(fonte)), LOTE) if idx is None else idx
+    x = torch.cat([fonte[i][0] for i in idx]).to(dev); t = torch.cat([fonte[i][1] for i in idx]).to(dev)
+    e = torch.cat([fonte[i][2] for i in idx]).to(dev).float()
     return x, t, e
+
+
+GUIA = 7.5
+def combinado(eps):
+    """Saida que de fato vira imagem: eps_u + guia*(eps_c - eps_u). Erros na diferenca sao amplificados 7,5x."""
+    r = eps.view(-1, 2, *eps.shape[1:]); return r[:, 0] + GUIA * (r[:, 1] - r[:, 0])
+
+
+def perda(sai, alvo_):
+    return F.mse_loss(sai, alvo_) + F.mse_loss(combinado(sai), combinado(alvo_))
+
+
+def perda_val(student, amp):
+    student.eval(); tot = []
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+        for i in range(0, len(VAL) - LOTE + 1, LOTE):
+            x, t, e = dados_lote(VAL, list(range(i, i + LOTE)))
+            a = teacher(x, t, encoder_hidden_states=e, return_dict=False)[0].float()
+            b = student(x, t, encoder_hidden_states=e, return_dict=False)[0].float()
+            tot.append(perda(b, a).item())
+    student.train(); return float(np.mean(tot))
 
 
 def treinar(student, cubos, segundos, amp):
@@ -173,6 +210,8 @@ def treinar(student, cubos, segundos, amp):
     try: scaler = torch.amp.GradScaler("cuda", enabled=amp)
     except Exception: scaler = torch.cuda.amp.GradScaler(enabled=amp)
     student.train(); t0 = time.time(); k = 0; ema = None
+    melhor, estado = None, None
+    v0 = perda_val(student, amp); print("      validacao inicial %.5f" % v0, flush=True)
     while True:
         frac = (time.time() - t0) / segundos
         if frac >= 1.0: break
@@ -183,12 +222,22 @@ def treinar(student, cubos, segundos, amp):
             alvo_ = teacher(x, t, encoder_hidden_states=e, return_dict=False)[0].float()
         with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
             sai = student(x, t, encoder_hidden_states=e, return_dict=False)[0].float()
-        loss = F.mse_loss(sai, alvo_)
+        loss = perda(sai, alvo_)
         if not torch.isfinite(loss): return None
         scaler.scale(loss).backward(); scaler.step(opt); scaler.update(); opt.zero_grad(set_to_none=True)
         k += 1; ema = loss.item() if ema is None else 0.95 * ema + 0.05 * loss.item()
-        if k % 25 == 0:
-            print("      passo %4d  perda %.5f  (%.1f s/passo, %d%% do tempo)" % (k, ema, (time.time() - t0) / k, 100 * frac), flush=True)
+        if k % 150 == 0:
+            v = perda_val(student, amp)
+            marca = ""
+            if melhor is None or v < melhor:
+                melhor = v; estado = None; torch.cuda.empty_cache()
+                estado = ({n: p.detach().clone() for n, p in cubos.state_dict().items()},
+                          {n: p.detach().clone() for n, p in student.state_dict().items()}); marca = "  <- melhor"
+            print("      passo %4d  treino %.5f  VALIDACAO %.5f%s  (%.1f s/passo, %d%% do tempo)"
+                  % (k, ema, v, marca, (time.time() - t0) / k, 100 * frac), flush=True)
+    if estado is not None:
+        cubos.load_state_dict(estado[0]); student.load_state_dict(estado[1])
+        print("      restaurado o melhor ponto (validacao %.5f; inicial %.5f)" % (melhor, v0), flush=True)
     return ema if ema is not None else 0.0
 
 
