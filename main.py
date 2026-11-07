@@ -1599,7 +1599,7 @@ class TtokenApp(App):
         self.est_edit.bind(on_release=self._est_mostrar_cadastro)
         # --- chat do Maestro
         self.est_chat = Glass(border=alpha(CYAN, 0.45))
-        self.est_chat.add_widget(tlabel("ESTUDIO: PYTHON LOCAL > COLAB > APIS GRATIS", 11, CYAN,
+        self.est_chat.add_widget(tlabel("ESTUDIO: IMAGEM E VIDEO NO SEU CELULAR, SEM INTERNET", 11, CYAN,
                                         bold=True))
         self.est_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(6))
         self.est_lista.bind(minimum_height=self.est_lista.setter("height"))
@@ -1610,28 +1610,35 @@ class TtokenApp(App):
                                  background_color=(0, 0, 0, 0), foreground_color=TEXT,
                                  hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
         self.est_chat.add_widget(self.est_inp)
-        self.est_btn = NeonButton("GERAR", height=dp(48))
-        self.est_btn.bind(on_release=self._est_gerar)
-        self.est_chat.add_widget(self.est_btn)
-        self._est_offline = False
-        self.est_off = Chip("MODO OFFLINE: DESLIGADO (toque para ligar)", height=40)
-        self.est_off.bind(on_release=self._est_alternar_offline)
-        self.est_chat.add_widget(self.est_off)
+        # --- principais (o que se usa): imagem e video offline, direto, sem configurar nada
+        img_off = NeonButton("GERAR IMAGEM (offline, gratis)", height=dp(48))
+        img_off.bind(on_release=self._est_img_offline)
+        self.est_chat.add_widget(img_off)
+        vid_off = NeonButton("GERAR VIDEO DE CENAS (1 cena por linha, com voz)", height=dp(48))
+        vid_off.bind(on_release=self._est_video_cenas)
+        self.est_chat.add_widget(vid_off)
         anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
         anim.bind(on_release=lambda w: self._est_pegar_foto_animar())
         self.est_chat.add_widget(anim)
-        vid_off = Chip("VIDEO DE CENAS OFFLINE (1 cena por linha, com voz)", height=40)
-        vid_off.bind(on_release=self._est_video_cenas)
-        self.est_chat.add_widget(vid_off)
-        img_off = Chip("GERAR IMAGEM OFFLINE (sem internet, gratis)", height=40)
-        img_off.bind(on_release=self._est_img_offline)
-        self.est_chat.add_widget(img_off)
+        # --- o que nao se usa mais no dia a dia: guardado aqui, nada foi apagado
+        self.est_btn = NeonButton("GERAR PELO SERVIDOR (Python local > Colab > APIs)", height=dp(48))
+        self.est_btn.bind(on_release=self._est_gerar)
+        self._est_offline = False
+        self.est_off = Chip("MODO OFFLINE: DESLIGADO (toque para ligar)", height=40)
+        self.est_off.bind(on_release=self._est_alternar_offline)
+        self.est_mais = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
+        self.est_mais.bind(minimum_height=self.est_mais.setter("height"))
+        self.est_mais.add_widget(self.est_btn)
+        self.est_mais.add_widget(self.est_off)
+        self.est_mais_chip = Chip("MAIS OPCOES (servidor, Colab) +", height=36)
+        self.est_mais_chip.bind(on_release=self._est_alternar_mais)
+        self.est_chat.add_widget(self.est_mais_chip)
         self.est_res = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
         self.est_res.bind(minimum_height=self.est_res.setter("height"))
         self.est_chat.add_widget(self.est_res)
         self._est_resultado = None
-        self._est_msg("Ola! Escreva o que voce quer ver e toque em GERAR. Eu tento o Python "
-                      "local, depois o Colab (GPU) e por fim as APIs gratis.")
+        self._est_msg("Ola! Escreva o que voce quer ver (em ingles funciona melhor) e toque em "
+                      "GERAR IMAGEM. Para video, escreva 1 cena por linha e toque em GERAR VIDEO.")
 
     def _abrir_site(self, rota):
         """SISTEMA/PAINEL: abre o site NA HORA (o navegador mostra a pagina assim que o
@@ -1766,6 +1773,16 @@ class TtokenApp(App):
         self._chooser2 = Chooser(lambda uris: self._arquivo_pego(uris, "animar"))
         self._chooser2.choose_content("image/*")
 
+    def _est_alternar_mais(self, *_):
+        """Mostra/esconde as opcoes antigas (servidor/Colab) sem apagar nada."""
+        if self.est_mais.parent is None:
+            idx = list(self.est_chat.children).index(self.est_mais_chip)
+            self.est_chat.add_widget(self.est_mais, index=idx)
+            self.est_mais_chip.text = "MAIS OPCOES (servidor, Colab) -"
+        else:
+            self.est_chat.remove_widget(self.est_mais)
+            self.est_mais_chip.text = "MAIS OPCOES (servidor, Colab) +"
+
     def _est_img_offline(self, *_):
         prompt = (self.est_inp.text or "").strip()
         if len(prompt) < 3:
@@ -1898,7 +1915,7 @@ class TtokenApp(App):
 
     def _est_fim(self, res):
         self.est_btn.disabled = False
-        self.est_btn.text = "GERAR"
+        self.est_btn.text = "GERAR PELO SERVIDOR (Python local > Colab > APIs)"
         self._motor(False)
         self._est_resultado = res
         if not res:
