@@ -1620,6 +1620,9 @@ class TtokenApp(App):
         anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
         anim.bind(on_release=lambda w: self._est_pegar_foto_animar())
         self.est_chat.add_widget(anim)
+        img_off = Chip("GERAR IMAGEM OFFLINE (sem internet, gratis)", height=40)
+        img_off.bind(on_release=self._est_img_offline)
+        self.est_chat.add_widget(img_off)
         self.est_res = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
         self.est_res.bind(minimum_height=self.est_res.setter("height"))
         self.est_chat.add_widget(self.est_res)
@@ -1759,6 +1762,30 @@ class TtokenApp(App):
             return
         self._chooser2 = Chooser(lambda uris: self._arquivo_pego(uris, "animar"))
         self._chooser2.choose_content("image/*")
+
+    def _est_img_offline(self, *_):
+        prompt = (self.est_inp.text or "").strip()
+        if len(prompt) < 3:
+            self._est_msg("✍️ Escreva o que voce quer ver (em ingles funciona melhor).")
+            return
+        self._est_msg("🖼️ Imagem offline: ~40 s no celular, sem internet. Aguarde...")
+        threading.Thread(target=self._est_img_offline_thread, args=(prompt,), daemon=True).start()
+
+    def _est_img_offline_thread(self, prompt):
+        """Roda em thread: SDXS 1 passo em numpy puro (offline_img.py)."""
+        try:
+            import offline_img
+            ok, motivo = offline_img.disponivel()
+            if not ok:
+                self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
+                return
+            saida = os.path.join(self._pasta_dados(), "ttoken_img_%s.png" %
+                                 time.strftime("%Y%m%d_%H%M%S"))
+            offline_img.gerar_png(prompt, saida, lado=256,
+                                  log=lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
+            self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
+        except Exception as e:
+            self._ui(self._est_msg, "⚠️ Nao consegui gerar offline: %s" % str(e)[:90])
 
     def _est_animar_foto(self, caminho):
         """Roda em thread: foto -> GIF com zoom/pan (animador.py), tudo no celular."""
