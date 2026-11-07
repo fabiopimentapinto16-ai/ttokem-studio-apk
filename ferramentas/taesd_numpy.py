@@ -17,9 +17,32 @@ def _relu(x):
     return np.maximum(x, 0.0, out=x) if x.dtype == np.float32 else np.maximum(x, 0.0)
 
 
+MODO_CONV = "desl"          # "desl" (9 matmuls sem copiar) ou "im2col"; escolher_conv() mede e decide POR APARELHO
+
+
+def escolher_conv(log=print, lado=96, reps=2):
+    """Mede as duas formas de convolucao (64 canais) NESTE aparelho e fica com a mais rapida (menos de 1 s)."""
+    import time
+    global MODO_CONV
+    rng = np.random.RandomState(0)
+    x = rng.randn(64, lado, lado).astype(np.float32)
+    w = (rng.randn(64, 64, 3, 3) * 0.05).astype(np.float32)
+    t = {"desl": 1e9, "im2col": 1e9}
+    for _ in range(reps):
+        for nome, f in (("desl", lambda: mc.conv2d_desl(x, w)), ("im2col", lambda: mc.conv2d(x, w, pad=1))):
+            t0 = time.time()
+            f()
+            t[nome] = min(t[nome], time.time() - t0)
+    MODO_CONV = "desl" if t["desl"] <= t["im2col"] else "im2col"
+    log("VAE: convolucao '%s' (desl %.0f ms, im2col %.0f ms)" % (MODO_CONV, 1000 * t["desl"], 1000 * t["im2col"]))
+    return MODO_CONV
+
+
 def _conv(x, P, nome):
     b = P(nome + ".bias") if P.tem(nome + ".bias") else None
-    return mc.conv2d_desl(x, P(nome + ".weight"), b)         # 2-3x mais rapida que conv2d com 64 canais
+    if MODO_CONV == "desl":
+        return mc.conv2d_desl(x, P(nome + ".weight"), b)
+    return mc.conv2d(x, P(nome + ".weight"), b, pad=1)
 
 
 def _bloco(x, P, p):

@@ -43,8 +43,11 @@ def gerar(pasta, prompt, semente=1, lado=256, latente=None, log=print):
     x = ag.passo(eps, x)
     U.fechar()
     log("UNet 1 passo (%.1f s)" % (time.time() - ts))
+    tn.escolher_conv(log)
+    tv = time.time()
     V = mc.Pesos(f_vae, cache_mb=0)
     img = cv.para_imagem(tn.decodificar(x, V))
+    log("VAE (%.1f s)" % (time.time() - tv))
     V.fechar()
     log("pronto em %.1f s" % (time.time() - t0))
     return img
