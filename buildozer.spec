@@ -17,6 +17,7 @@ android.archs = arm64-v8a
 android.accept_sdk_license = True
 android.enable_androidx = True
 android.manifest.intent_filters = intent_filters.xml
+android.extra_manifest_xml = extra_manifest.xml
 p4a.branch = v2024.01.21
 
 [buildozer]

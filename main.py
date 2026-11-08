@@ -1876,7 +1876,8 @@ class TtokenApp(App):
             b.bind(on_release=lambda w: self._tocar_wav(narr))
             self.est_res.add_widget(b)
         else:
-            self._est_msg("ℹ️ Sem voz offline neste celular: o video saiu so com legenda.")
+            import tts_android
+            self._est_msg("ℹ️ Sem voz: o video saiu so com legenda. Motivo: %s" % (tts_android.ULTIMO_ERRO or "desconhecido"))
 
     def _tocar_wav(self, caminho):
         try:

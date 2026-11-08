@@ -24,6 +24,27 @@ PLANOS = (
     ("hero shot of {x}, low angle, cinematic backlight, vibrant, polished", "Pronto para voce viver isso."),
 )
 
+PLANOS_LONGOS = (
+    "{x}, wide establishing shot, golden hour, epic atmosphere",
+    "{x}, medium shot, natural light, rich colors, subtle motion",
+    "{x}, extreme close-up detail, macro lens, soft bokeh, dramatic light",
+    "{x}, hero low angle shot, cinematic backlight, vibrant, polished",
+)
+_LIXO_INICIO = re.compile(r"^\s*(the\s+)?(video|clip|scene|image|photo)\s+(shows|of|with|depicts)\s+", re.I)
+
+
+def _limpar_ideia(x, max_palavras=26):
+    """Tira 'The video shows ...' do comeco e limita o tamanho (o CLIP so le ~77 tokens)."""
+    x = re.sub(r"\s+", " ", str(x or "")).strip().rstrip(".,")
+    x = _LIXO_INICIO.sub("", x).strip()
+    return " ".join(x.split(" ")[:max_palavras])
+
+
+def titulo_curto(x, palavras=6):
+    """Primeiras palavras da ideia, cortando em palavra inteira (nunca no meio)."""
+    p = re.sub(r"\s+", " ", str(x or "")).strip().rstrip(".,").split(" ")
+    return " ".join(p[:palavras]) + ("..." if len(p) > palavras else "")
+
 
 def estilizar(prompt):
     """Acrescenta o estilo profissional ao prompt (sem repetir se ja tiver)."""
@@ -35,15 +56,21 @@ def cenas_offline(ideia, n=4, idioma="pt", ideia_en=None):
     """Roteirista local: 1 ideia -> n planos de cinema. `ideia_en` = a ideia ja em ingles (para o prompt de imagem);
     a narracao sai no idioma da pessoa."""
     legenda_orig = re.sub(r"\s+", " ", str(ideia or "")).strip()
-    x = re.sub(r"\s+", " ", str(ideia_en or ideia or "")).strip().rstrip(".,") or "the subject"
+    x = _limpar_ideia(ideia_en or ideia) or "the subject"
+    longa = len(x.split()) > 8
     n = max(2, min(int(n), len(PLANOS)))
     out = []
     for i in range(n):
         k = i if n == len(PLANOS) else round(i * (len(PLANOS) - 1) / (n - 1))
-        modelo = PLANOS[k][0]
+        xi = x
+        if longa:                                       # frase longa: cada cena foca numa parte da frase
+            partes = [p.strip() for p in re.split(r",| and then | then | while | and ", x) if len(p.strip()) > 3]
+            if len(partes) >= 2:
+                xi = partes[0] + (", " + partes[min(k, len(partes) - 1)] if k >= 1 else "")
+        modelo = PLANOS_LONGOS[k].replace("{x}", "{x}") if longa else PLANOS[k][0]
         fala = FALAS[idioma][k] if idioma in FALAS else (legenda_orig if i == 0 else "")
-        out.append({"prompt": estilizar(modelo.format(x=x)), "narracao": fala, "legenda": legenda_orig[:40] if i == 0 else ""})
-    return {"titulo": legenda_orig[:40], "cenas": out, "origem": "local", "idioma": idioma}
+        out.append({"prompt": estilizar(modelo.format(x=xi)), "narracao": fala, "legenda": titulo_curto(legenda_orig) if i == 0 else ""})
+    return {"titulo": titulo_curto(legenda_orig), "cenas": out, "origem": "local", "idioma": idioma}
 
 
 # ------------------------------------------------------------------ qualquer idioma
