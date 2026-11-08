@@ -1787,7 +1787,7 @@ class TtokenApp(App):
         if len(prompt) < 3:
             self._est_msg("✍️ Escreva o que voce quer ver (em ingles funciona melhor).")
             return
-        self._est_msg("🖼️ Imagem offline: ~40 s no celular, sem internet. Aguarde...")
+        self._est_msg("🖼️ Imagem offline: ~45 s com o motor rapido (Pydroid), ~12 min sem ele. Aguarde...")
         self._motor(True)
         threading.Thread(target=self._est_img_offline_thread, args=(prompt,), daemon=True).start()
 
@@ -1819,7 +1819,7 @@ class TtokenApp(App):
         if not cenas:
             self._est_msg("✍️ Escreva 1 cena por linha (ate 8). Ex.: a red apple on a table")
             return
-        self._est_msg("🎬 Video de cenas offline: %d cenas, ~40 s cada, sem internet. Aguarde..." % len(cenas))
+        self._est_msg("🎬 Video de cenas offline: %d cenas (~45 s cada com o motor rapido do Pydroid, ~12 min sem ele). Aguarde..." % len(cenas))
         self._motor(True)
         threading.Thread(target=self._est_video_cenas_thread, args=(cenas,), daemon=True).start()
 

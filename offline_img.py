@@ -56,8 +56,38 @@ def abrir_ajustes_acesso():
         return False
 
 
+PORTA_RAPIDA = 8765
+
+
+def servidor_ativo():
+    """True se o motor rapido (sdxs_servidor.py rodando no Pydroid) esta ligado neste celular."""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/" % PORTA_RAPIDA, timeout=1.5) as r:
+            return b"ttoken-sdxs" in r.read(64)
+    except Exception:
+        return False
+
+
+def _gerar_no_servidor(prompt, saida, semente, lado):
+    import json
+    import urllib.request
+    req = urllib.request.Request("http://127.0.0.1:%d/imagem" % PORTA_RAPIDA, method="POST",
+                                 data=json.dumps({"prompt": prompt, "semente": semente, "lado": lado}).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=900) as r:
+        dados = r.read()
+    if not dados.startswith(b"\x89PNG"):
+        raise RuntimeError("motor rapido respondeu: %s" % dados[:80].decode("utf-8", "replace"))
+    with open(saida, "wb") as f:
+        f.write(dados)
+    return saida
+
+
 def disponivel():
-    """(ok, motivo). ok=True se numpy existe e os modelos estao no celular."""
+    """(ok, motivo). ok=True se o motor rapido esta ligado, ou se numpy e os modelos estao no celular."""
+    if servidor_ativo():
+        return True, ""
     try:
         import numpy  # noqa: F401
     except Exception:
@@ -73,6 +103,12 @@ def gerar_png(prompt, saida, semente=None, lado=256, log=print):
     """Gera a imagem e salva em PNG. Devolve o caminho."""
     if _MOT not in sys.path:
         sys.path.insert(0, _MOT)
+    if semente is None:
+        semente = int(time.time()) % 100000
+    if servidor_ativo():
+        log("motor rapido do Pydroid ligado")
+        return _gerar_no_servidor(prompt, saida, semente, lado)
+    log("motor rapido desligado: usando o motor do app (lento, uns 12 min)")
     pasta = achar_pasta()
     if pasta is None:
         raise RuntimeError("Nao achei a pasta sdxs_cubo em Download.")
