@@ -1595,7 +1595,7 @@ class TtokenApp(App):
         sv = NeonButton("SALVAR LINKS", height=dp(46))
         sv.bind(on_release=self._est_salvar_links)
         self.est_cad.add_widget(sv)
-        self.est_edit = Chip("EDITAR LINKS", height=36)
+        self.est_edit = Chip("LINKS DO SERVIDOR/COLAB (opcional) +", height=36)
         self.est_edit.bind(on_release=self._est_mostrar_cadastro)
         # --- chat do Maestro
         self.est_chat = Glass(border=alpha(CYAN, 0.45))
@@ -1712,10 +1712,9 @@ class TtokenApp(App):
         self._aba("estudio")
         self.p_estudio.clear_widgets()
         links = maestro_ttoken.carregar_links(self._pasta_dados())
-        if not links["colab"] and not links["local"]:      # primeira vez: cadastro
-            self.p_estudio.add_widget(self.est_cad)
-        else:
-            self.p_estudio.add_widget(self.est_edit)
+        # o cadastro do Colab/servidor e opcional (imagem e video offline nao precisam): so aparece
+        # se a pessoa tocar em EDITAR LINKS; antes aparecia sozinho na primeira vez e atrapalhava
+        self.p_estudio.add_widget(self.est_edit)
         self.p_estudio.add_widget(self.est_chat)
         self.scroll.scroll_y = 1
 
