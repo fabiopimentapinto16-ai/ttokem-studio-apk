@@ -1815,18 +1815,21 @@ class TtokenApp(App):
             self._ui(self._est_msg, "⚠️ Nao consegui gerar offline: %s" % str(e)[:90])
 
     def _est_video_cenas(self, *_):
-        cenas = [l.strip() for l in (self.est_inp.text or "").splitlines() if len(l.strip()) >= 3][:8]
-        if not cenas:
-            self._est_msg("✍️ Escreva 1 cena por linha (ate 8). Ex.: a red apple on a table")
+        texto = (self.est_inp.text or "").strip()
+        if len(texto) < 3:
+            self._est_msg("✍️ Escreva a ideia do video (1 linha: eu crio as cenas) ou 1 cena por linha (ate 8).")
             return
-        self._est_msg("🎬 Video de cenas offline: %d cenas (~45 s cada com o motor rapido do Pydroid, ~12 min sem ele). Aguarde..." % len(cenas))
+        self._est_msg("🎬 Video de cenas offline: o cerebro cria as cenas e cada uma leva ~45 s com o motor "
+                      "rapido do Pydroid (~12 min sem ele). Aguarde...")
         self._motor(True)
-        threading.Thread(target=self._est_video_cenas_thread, args=(cenas,), daemon=True).start()
+        threading.Thread(target=self._est_video_cenas_thread, args=(texto,), daemon=True).start()
 
-    def _est_video_cenas_thread(self, cenas):
-        """Roda em thread: cada linha -> imagem (SDXS) -> GIF com camera, legenda e narracao (voz do Android)."""
+    def _est_video_cenas_thread(self, texto):
+        """Roda em thread: ideia -> cenas (cerebro: IA se houver, senao roteirista local) -> imagem (SDXS) por cena
+        -> GIF com camera, legenda e narracao (voz do Android)."""
         try:
             import offline_img
+            import roteirista
             import video_cenas
             import tts_android
             ok, motivo = offline_img.disponivel()
@@ -1839,19 +1842,25 @@ class TtokenApp(App):
                 else:
                     self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
+            idioma = "Portugues do Brasil" if str(self.idioma).startswith("Port") else str(self.idioma)
+            plano = roteirista.montar_cenas(texto, llm=(self.llm if self._tem_chaves() else None), idioma=idioma)
+            cenas = plano["cenas"]
+            self._ui(self._est_msg, "🧠 Roteiro pronto (%s): %d cenas." % (plano.get("origem", ""), len(cenas)))
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
             imgs = []
             for i, c in enumerate(cenas):
-                self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c[:50]))
-                imgs.append(offline_img.gerar_png(c, os.path.join(pasta, "cena_%02d.png" % i), semente=i + 1, lado=256))
+                self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c["prompt"][:70]))
+                imgs.append(offline_img.gerar_png(c["prompt"], os.path.join(pasta, "cena_%02d.png" % i),
+                                                  semente=i + 1, lado=256))
             self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
-            wavs = tts_android.sintetizar(cenas, pasta, idioma=("pt-BR" if self.idioma.startswith("Port") else "en-US"))
+            wavs = tts_android.sintetizar([c["narracao"] for c in cenas], pasta,
+                                          idioma=("pt-BR" if idioma.startswith("Port") else "en-US"))
             narr = os.path.join(pasta, "narracao.wav")
             durs = video_cenas.juntar_wavs(wavs, narr)
             self._ui(self._est_msg, "🎞️ Montando o video...")
-            gif, tot = video_cenas.montar(imgs, cenas, os.path.join(pasta, "video_cenas.gif"), durs,
-                                          semente=cenas[0])
+            gif, tot = video_cenas.montar(imgs, [c["legenda"] or c["narracao"] for c in cenas],
+                                          os.path.join(pasta, "video_cenas.gif"), durs, semente=cenas[0]["prompt"][:20])
             tem_voz = any(wavs)
             self._ui(self._est_video_cenas_fim, gif, narr if tem_voz else "", tem_voz)
         except Exception as e:
