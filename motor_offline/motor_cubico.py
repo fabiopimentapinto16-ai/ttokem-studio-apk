@@ -70,6 +70,87 @@ class PesosMemoria:
         return self.e[nome]
 
 
+# ------------------------------------------------------------------ multiplicacao em varios nucleos
+# Onde o numpy NAO tem BLAS otimizado (ex.: dentro do APK) cada matmul usa 1 nucleo so. Aqui divide em fatias e roda
+# em varias threads (o numpy solta o GIL). configurar_hilos() MEDE e so liga se ganhar (no Pydroid, que ja tem BLAS
+# multi-nucleo, fica desligado). Resultado identico a a @ b.
+_HILOS = 1
+_POOL = None
+
+
+def _fatias(n, k):
+    base, resto = divmod(n, k)
+    i = 0
+    for j in range(k):
+        t = base + (1 if j < resto else 0)
+        if t:
+            yield i, i + t
+        i += t
+
+
+def mm(a, b):
+    """a @ b, dividido em threads quando configurar_hilos() ligou. a,b: 2D, ou 3D com o mesmo 1o eixo (cabecas)."""
+    k = _HILOS
+    if k <= 1:
+        return a @ b
+    if a.ndim == 3 and b.ndim == 3 and a.shape[0] == b.shape[0] and a.shape[0] >= 2:
+        out = np.empty((a.shape[0], a.shape[1], b.shape[2]), np.result_type(a, b))
+        fut = [_POOL.submit(np.matmul, a[i:j], b[i:j], out[i:j]) for i, j in _fatias(a.shape[0], min(k, a.shape[0]))]
+        for f in fut:
+            f.result()
+        return out
+    if a.ndim != 2 or b.ndim != 2 or a.shape[0] * b.shape[1] * a.shape[1] < 3_000_000:
+        return a @ b
+    if a.shape[0] < b.shape[1]:                      # poucas linhas e muitas colunas: divide as colunas de b
+        out = np.empty((a.shape[0], b.shape[1]), np.result_type(a, b))
+        fut = [_POOL.submit(lambda i, j: out.__setitem__((slice(None), slice(i, j)), a @ b[:, i:j]), i, j)
+               for i, j in _fatias(b.shape[1], k)]
+        for f in fut:
+            f.result()
+        return out
+    out = np.empty((a.shape[0], b.shape[1]), np.result_type(a, b))
+    fut = [_POOL.submit(np.matmul, a[i:j], b, out[i:j]) for i, j in _fatias(a.shape[0], k)]
+    for f in fut:
+        f.result()
+    return out
+
+
+def configurar_hilos(n=None, log=None, forcar=None):
+    """Mede 1 thread x N threads numa matmul grande e liga so se ganhar >= 1,3x. forcar=True/False ignora a medida.
+    Devolve o numero de threads em uso. Idempotente (mede so na 1a vez)."""
+    global _HILOS, _POOL
+    import os
+    if getattr(configurar_hilos, "feito", False) and forcar is None:
+        return _HILOS
+    configurar_hilos.feito = True
+    nuc = n or os.cpu_count() or 1
+    if forcar is False or nuc < 2:
+        _HILOS = 1
+        return 1
+    from concurrent.futures import ThreadPoolExecutor
+    _POOL = ThreadPoolExecutor(max_workers=nuc)
+    if forcar:
+        _HILOS = nuc
+        return nuc
+    a = np.random.rand(768, 768).astype(np.float32)
+    b = np.random.rand(768, 768).astype(np.float32)
+
+    def tempo(k):
+        global _HILOS
+        _HILOS = k
+        mm(a, b)
+        t = time.time()
+        for _ in range(3):
+            mm(a, b)
+        return (time.time() - t) / 3
+    t1, tn = tempo(1), tempo(nuc)
+    _HILOS = nuc if tn * 1.3 <= t1 else 1
+    if log:
+        log("matmul: 1 thread %.0f ms, %d threads %.0f ms -> %s" % (t1 * 1e3, nuc, tn * 1e3,
+                                                                  "usando %d threads" % _HILOS if _HILOS > 1 else "1 thread (BLAS ja e rapido)"))
+    return _HILOS
+
+
 # ------------------------------------------------------------------ operacoes
 def silu(x):
     return x / (1.0 + np.exp(-x))
@@ -80,7 +161,7 @@ def gelu(x):                                         # aproximacao tanh (erro ~1
 
 
 def linear(x, w, b=None):
-    y = x @ w.T
+    y = mm(x, w.T)
     return y + b if b is not None else y
 
 
@@ -96,7 +177,7 @@ def conv2d(x, w, b=None, stride=1, pad=0, linhas=16):
     for r0 in range(0, Ho, linhas):
         r1 = min(Ho, r0 + linhas)
         cols = jan[:, r0:r1].transpose(1, 2, 0, 3, 4).reshape((r1 - r0) * Wo, C * kh * kw)
-        out[:, r0:r1, :] = (cols @ wm.T).reshape(r1 - r0, Wo, O).transpose(2, 0, 1)
+        out[:, r0:r1, :] = mm(cols, wm.T).reshape(r1 - r0, Wo, O).transpose(2, 0, 1)
     if b is not None:
         out += b[:, None, None]
     return out
@@ -127,11 +208,11 @@ def atencao(q, k, v, cabecas, bloco=256):
     out = np.empty((cabecas, N, d), np.float32)
     esc = 1.0 / np.sqrt(d)
     for i in range(0, N, bloco):
-        s = (qh[:, i:i + bloco] @ kh) * esc
+        s = mm(qh[:, i:i + bloco], kh) * esc
         s -= s.max(-1, keepdims=True)
         p = np.exp(s)
         p /= p.sum(-1, keepdims=True)
-        out[:, i:i + bloco] = p @ vh
+        out[:, i:i + bloco] = mm(p, vh)
     return out.transpose(1, 0, 2).reshape(N, D)
 
 
@@ -150,10 +231,10 @@ def conv2d_desl(x, w, b=None, bloco=4096):
     out = np.empty((O, L), np.float32)
     for c0 in range(0, L, bloco):
         c1 = min(L, c0 + bloco)
-        acc = wk[0] @ xf[:, c0:c1]
+        acc = mm(wk[0], xf[:, c0:c1])
         for k in range(1, 9):
             off = (k // 3) * Wp + (k % 3)
-            acc += wk[k] @ xf[:, off + c0:off + c1]
+            acc += mm(wk[k], xf[:, off + c0:off + c1])
         out[:, c0:c1] = acc
     out = out.reshape(O, H, Wp)[:, :, :W]
     if b is not None:

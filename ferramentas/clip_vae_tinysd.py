@@ -33,12 +33,12 @@ def _atencao_causal(h, P, p, cabecas):
     k = mc.linear(h, P(p + ".k_proj.weight"), P(p + ".k_proj.bias"))
     v = mc.linear(h, P(p + ".v_proj.weight"), P(p + ".v_proj.bias"))
     qh, kh, vh = [a.reshape(N, cabecas, d).transpose(1, 0, 2) for a in (q, k, v)]
-    s = qh @ kh.transpose(0, 2, 1)
+    s = mc.mm(qh, kh.transpose(0, 2, 1))
     s = s + np.triu(np.full((N, N), -np.inf, np.float32), 1)       # cada token so ve os anteriores
     s -= s.max(-1, keepdims=True)
     e = np.exp(s)
     e /= e.sum(-1, keepdims=True)
-    o = (e @ vh).transpose(1, 0, 2).reshape(N, D)
+    o = mc.mm(e, vh).transpose(1, 0, 2).reshape(N, D)
     return mc.linear(o, P(p + ".out_proj.weight"), P(p + ".out_proj.bias"))
 
 

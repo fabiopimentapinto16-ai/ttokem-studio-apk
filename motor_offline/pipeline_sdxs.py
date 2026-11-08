@@ -24,6 +24,7 @@ import taesd_numpy as tn             # noqa: E402
 
 def gerar(pasta, prompt, semente=1, lado=256, latente=None, log=print):
     t0 = time.time()
+    mc.configurar_hilos(log=log)                    # mede e liga varios nucleos so se ajudar (APK); no Pydroid fica 1
     tok = pt.TokenizadorCLIP(pt._achar(pasta, "tokenizer.json", ["tokenizer.json", "tok/tokenizer.json"]))
     f_unet = pt._achar(pasta, "UNet", ["sdxs_unet_curva.ttq", "sdxs_unet_q8.ttq"])
     f_txt = pt._achar(pasta, "texto", ["sdxs_texto_q8.ttq"])
