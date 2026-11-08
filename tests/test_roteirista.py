@@ -36,6 +36,35 @@ class TestRoteirista(unittest.TestCase):
         self.assertEqual(r.montar_cenas("farol", _LLM(erro=True))["origem"], "local")
         self.assertEqual(r.montar_cenas("farol", _LLM("lixo sem json"))["origem"], "local")
 
+    def test_detecta_idioma(self):
+        self.assertEqual(r.detectar_idioma("uma casa no campo com um cachorro"), "pt")
+        self.assertEqual(r.detectar_idioma("a house in the countryside with a dog"), "en")
+        self.assertEqual(r.detectar_idioma("una casa en el campo con un perro"), "es")
+        self.assertEqual(r.detectar_idioma("maison à la campagne avec un chien"), "fr")
+        self.assertEqual(r.detectar_idioma("家の庭"), "xx")
+        self.assertEqual(r.locale_tts("pt"), "pt-BR")
+        self.assertEqual(r.locale_tts("ja"), "ja")
+
+    def test_qualquer_idioma_traduz_prompt_e_fala_no_idioma(self):
+        antes = r.traduzir_en
+        r.traduzir_en = lambda t, timeout=8: ("a house in the countryside", "pt")
+        try:
+            p = r.montar_cenas("uma casa no campo", usar_ia=False)
+        finally:
+            r.traduzir_en = antes
+        self.assertIn("house in the countryside", p["cenas"][0]["prompt"])
+        self.assertEqual(p["idioma"], "pt")
+        self.assertEqual(p["cenas"][0]["narracao"], "Tudo comeca aqui.")
+
+    def test_sem_tradutor_avisa(self):
+        antes = r.traduzir_en
+        r.traduzir_en = lambda t, timeout=8: None
+        try:
+            p = r.montar_cenas("uma casa no campo", usar_ia=False)
+        finally:
+            r.traduzir_en = antes
+        self.assertIn("aviso", p)
+
 
 if __name__ == "__main__":
     unittest.main()

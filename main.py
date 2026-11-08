@@ -1842,10 +1842,12 @@ class TtokenApp(App):
                 else:
                     self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
-            idioma = "Portugues do Brasil" if str(self.idioma).startswith("Port") else str(self.idioma)
-            plano = roteirista.montar_cenas(texto, llm=(self.llm if self._tem_chaves() else None), idioma=idioma)
+            plano = roteirista.montar_cenas(texto, llm=(self.llm if self._tem_chaves() else None))
             cenas = plano["cenas"]
-            self._ui(self._est_msg, "🧠 Roteiro pronto (%s): %d cenas." % (plano.get("origem", ""), len(cenas)))
+            self._ui(self._est_msg, "🧠 Roteiro pronto (%s, idioma: %s): %d cenas." % (
+                plano.get("origem", ""), plano.get("idioma", "?"), len(cenas)))
+            if plano.get("aviso"):
+                self._ui(self._est_msg, "ℹ️ " + plano["aviso"])
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
             imgs = []
@@ -1855,7 +1857,7 @@ class TtokenApp(App):
                                                   semente=i + 1, lado=256))
             self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
             wavs = tts_android.sintetizar([c["narracao"] for c in cenas], pasta,
-                                          idioma=("pt-BR" if idioma.startswith("Port") else "en-US"))
+                                          idioma=roteirista.locale_tts(plano.get("idioma", "en")))
             narr = os.path.join(pasta, "narracao.wav")
             durs = video_cenas.juntar_wavs(wavs, narr)
             self._ui(self._est_msg, "🎞️ Montando o video...")
