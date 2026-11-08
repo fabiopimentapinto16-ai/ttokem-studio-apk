@@ -1604,7 +1604,7 @@ class TtokenApp(App):
         self.est_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(6))
         self.est_lista.bind(minimum_height=self.est_lista.setter("height"))
         self.est_chat.add_widget(self.est_lista)
-        self.est_inp = TextInput(hint_text="Descreva o video (ex: carro neon na chuva)...",
+        self.est_inp = TextInput(hint_text="Escreva aqui em ingles. Ex: a red apple on a wooden table",
                                  multiline=True, size_hint_y=None, height=dp(80),
                                  font_size=sp(15), background_normal="", background_active="",
                                  background_color=(0, 0, 0, 0), foreground_color=TEXT,
@@ -1614,7 +1614,7 @@ class TtokenApp(App):
         img_off = NeonButton("GERAR IMAGEM (offline, gratis)", height=dp(48))
         img_off.bind(on_release=self._est_img_offline)
         self.est_chat.add_widget(img_off)
-        vid_off = NeonButton("GERAR VIDEO DE CENAS (1 cena por linha, com voz)", height=dp(48))
+        vid_off = NeonButton("GERAR VIDEO DE CENAS (com voz)", height=dp(48))
         vid_off.bind(on_release=self._est_video_cenas)
         self.est_chat.add_widget(vid_off)
         anim = Chip("ANIMAR UMA FOTO MINHA (offline, gratis)", height=40)
