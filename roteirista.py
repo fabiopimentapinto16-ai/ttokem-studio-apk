@@ -15,7 +15,9 @@ SYSTEM_CENAS = (
     "realista, SEM texto na imagem, SEM pessoas famosas, cenas diferentes entre si e coerentes na historia. "
     '"narracao": 1 frase curta para ser falada (ate 18 palavras). '
     '"legenda": ate 6 palavras. "narracao" e "legenda" sao escritas em {IDIOMA} (a ideia pode vir em qualquer idioma), '
-    'mas "prompt" e SEMPRE em INGLES. A cena 1 e um gancho forte; a ultima fecha com chamada para acao.')
+    'mas "prompt" e SEMPRE em INGLES. A cena 1 e um gancho forte; a ultima fecha com chamada para acao. '
+    "COERENCIA: mantenha o MESMO sujeito principal, as mesmas cores e o mesmo estilo visual em todas as cenas; "
+    "repita os descritores visuais do sujeito (cor, material, roupa, local) em cada prompt.")
 
 # planos de cinema: como contar a mesma ideia em 4 planos diferentes (funciona sem internet)
 PLANOS = (

@@ -1864,6 +1864,10 @@ class TtokenApp(App):
             links = maestro_ttoken.carregar_links(self._pasta_dados())
             alvo = nuvem.achar_link(links["colab"], API)      # colado a mao, ou o que o Colab registrou sozinho
             if not alvo:
+                if not getattr(self, "_avisou_nuvem", False):
+                    self._avisou_nuvem = True
+                    self._ui(self._est_msg, "☁️ Sem refinador na nuvem: ficou o rascunho do celular. Para mais detalhe, "
+                             "ligue o Colab e cole o link em MAIS OPCOES.")
                 return saida
             self._ui(self._est_msg, "☁️ Refinando o detalhe na nuvem...")
             novo = nuvem.refinar(saida, prompt, alvo, saida=saida[:-4] + "_nuvem.png", chave=links["chave"])
@@ -1953,10 +1957,12 @@ class TtokenApp(App):
             plano_ap = self._est_plano_aparelho(offline_img)
             lado_img = plano_ap["lado"]
             imgs = []
+            import zlib
+            semente_base = zlib.crc32(texto.encode("utf-8")) % 100000     # mesma semente em todas as cenas = mesmo "clima"
             for i, c in enumerate(cenas):
                 self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c["prompt"][:70]))
                 imgs.append(self._est_gerar_medindo(offline_img, plano_ap, c["prompt"],
-                                                    os.path.join(pasta, "cena_%02d.png" % i), i + 1,
+                                                    os.path.join(pasta, "cena_%02d.png" % i), semente_base,
                                                     lambda t: None))
             self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
             wavs = tts_android.sintetizar([c["narracao"] for c in cenas], pasta,
