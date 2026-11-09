@@ -88,8 +88,35 @@ def _fatias(n, k):
         i += t
 
 
+try:                                   # matmul propria multi-thread (so existe no APK; no resto cai no numpy)
+    import ttgemm as _tg
+except Exception:
+    _tg = None
+_NT_TG = [0]
+
+
+def _tg_ok(a, b):
+    return (_tg is not None and a.dtype == np.float32 and b.dtype == np.float32
+            and a.flags.c_contiguous and b.flags.c_contiguous)
+
+
+def _tg_mm(a, b):
+    import os
+    if not _NT_TG[0]:
+        _NT_TG[0] = max(1, min(8, os.cpu_count() or 1))
+    m, k = a.shape
+    n = b.shape[1]
+    out = np.empty((m, n), np.float32)
+    _tg.sgemm(a, b, out, m, k, n, _NT_TG[0])
+    return out
+
+
 def mm(a, b):
     """a @ b, dividido em threads quando configurar_hilos() ligou. a,b: 2D, ou 3D com o mesmo 1o eixo (cabecas)."""
+    if a.ndim == 2 and b.ndim == 2 and _tg_ok(a, b) and a.shape[1] == b.shape[0]:
+        return _tg_mm(a, b)
+    if a.ndim == 3 and b.ndim == 3 and a.shape[0] == b.shape[0] and _tg_ok(a, b):
+        return np.stack([_tg_mm(a[i], b[i]) for i in range(a.shape[0])])
     k = _HILOS
     if k <= 1:
         return a @ b
