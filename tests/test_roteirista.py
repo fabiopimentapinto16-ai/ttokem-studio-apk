@@ -90,3 +90,23 @@ class TestRoteirista(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TPromptCerebro(unittest.TestCase):
+    def test_cerebro_vira_prompt_profissional(self):
+        import roteirista as r
+        p, av = r.prompt_imagem("um aviao em perfwito estado", traduzir_ok=False,
+                                cerebro=lambda s, u: '"A pristine white passenger airplane on a runway at golden hour, wide angle, soft light"')
+        self.assertIn("passenger airplane", p)
+        self.assertIn("cinematic", p)
+        self.assertEqual(r.ULTIMA_FONTE[0], "IA")
+
+    def test_cerebro_ruim_cai_no_fallback(self):
+        import roteirista as r
+        for ruim in (lambda s, u: "Sorry, I cannot help", lambda s, u: "um aviao branco na pista", lambda s, u: "x"):
+            p, av = r.prompt_imagem("a red apple on a table", traduzir_ok=False, cerebro=ruim)
+            self.assertIn("red apple", p)
+            self.assertEqual(r.ULTIMA_FONTE[0], "texto")
+        def quebra(s, u): raise RuntimeError("sem rede")
+        p, _ = r.prompt_imagem("a red apple", traduzir_ok=False, cerebro=quebra)
+        self.assertIn("red apple", p)

@@ -251,14 +251,46 @@ def montar_cenas(ideia_ou_linhas, llm=None, idioma="Portugues do Brasil", n=4, u
     return r_
 
 
-def prompt_imagem(texto, traduzir_ok=True):
-    """Para o botao GERAR IMAGEM: qualquer idioma -> prompt em ingles com o estilo Hollywood. Devolve (prompt, aviso)."""
+SYSTEM_PROMPT_IMG = (
+    "You are a professional prompt engineer for a text-to-image model. The user's idea may be in ANY language and may "
+    "contain typos: understand what they mean. Reply with ONLY ONE English prompt, no quotes, no explanations, "
+    "max 45 words. Structure: main subject (very concrete, keep EXACTLY what the user asked), setting, composition/"
+    "camera angle, lighting, mood, color palette. Do not invent extra subjects. No text, logos or names in the image.")
+ULTIMA_FONTE = [""]
+
+
+def _prompt_do_cerebro(texto, cerebro):
+    """cerebro(sistema, usuario) -> texto (IA do app ou do backend). Devolve o prompt em ingles ou '' se nao serviu."""
+    try:
+        r = cerebro(SYSTEM_PROMPT_IMG, "Idea: %s" % texto[:300])
+    except Exception:
+        return ""
+    r = re.sub(r"\s+", " ", str(r or "").splitlines()[0] if str(r or "").strip() else "").strip().strip("\"'` ")
+    r = re.sub(r"^(prompt|english prompt)\s*:\s*", "", r, flags=re.I)
+    if len(r) < 12 or len(r) > 600 or re.search(r"\b(sorry|cannot|as an ai|unable to)\b", r, re.I):
+        return ""
+    if sum(ch.isascii() for ch in r) < 0.9 * len(r) or detectar_idioma(r) in ("pt", "es", "fr", "de", "it"):
+        return ""                                                 # veio em outro idioma: nao serve
+    return " ".join(r.split(" ")[:60])
+
+
+def prompt_imagem(texto, traduzir_ok=True, cerebro=None):
+    """Para o botao GERAR IMAGEM: qualquer idioma -> prompt PROFISSIONAL em ingles com o estilo Hollywood.
+    1) cerebro (IA) escreve o prompt; 2) senao traduz (internet); 3) senao usa o texto. Devolve (prompt, aviso).
+    ULTIMA_FONTE[0] diz qual caminho valeu: 'IA', 'tradutor' ou 'texto'."""
     t = re.sub(r"\s+", " ", str(texto or "")).strip()
+    if cerebro is not None:
+        p = _prompt_do_cerebro(t, cerebro)
+        if p:
+            ULTIMA_FONTE[0] = "IA"
+            return estilizar(p), ""
     cod, aviso = detectar_idioma(t), ""
+    ULTIMA_FONTE[0] = "texto"
     if cod != "en" and traduzir_ok:
         tr = traduzir_en(t)
         if tr:
             t = tr[0]
+            ULTIMA_FONTE[0] = "tradutor"
         else:
             aviso = "sem tradutor: usei o texto como esta (em ingles a imagem sai melhor)"
     return estilizar(_limpar_ideia(t, 40)), aviso

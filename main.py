@@ -1831,6 +1831,21 @@ class TtokenApp(App):
         self._ui(self._est_msg, plano["texto"])
         return plano
 
+    def _cerebro_prompt(self):
+        """O 'cerebro' do Ttoken para escrever o prompt: IA do app (se houver chave) ou o backend do Ttoken."""
+        def cerebro(sistema, usuario):
+            if self._tem_chaves():
+                try:
+                    return self.llm.chat([{"role": "system", "content": sistema},
+                                          {"role": "user", "content": usuario}], max_tokens=160)[0]
+                except Exception:
+                    pass
+            r = requests.post(API + "/api/chat", json={"mensagem": sistema + "\n\n" + usuario, "idioma": "English"},
+                              timeout=45)
+            r.raise_for_status()
+            return r.json().get("resposta", "")
+        return cerebro
+
     def _est_gerar_medindo(self, offline_img, plano, prompt, saida, semente, log):
         """Gera 1 imagem e ensina o perfil (tempo real; se faltar memoria, lembra para nao tentar de novo)."""
         t0 = time.time()
@@ -1886,9 +1901,11 @@ class TtokenApp(App):
             import roteirista
             saida = os.path.join(self._pasta_dados(), "ttoken_img_%s.png" %
                                  time.strftime("%Y%m%d_%H%M%S"))
-            prompt_en, aviso = roteirista.prompt_imagem(prompt)
+            self._ui(self._est_msg, "🧠 Criando o prompt profissional em ingles...")
+            prompt_en, aviso = roteirista.prompt_imagem(prompt, cerebro=self._cerebro_prompt())
             if aviso:
                 self._ui(self._est_msg, "ℹ️ " + aviso)
+            self._ui(self._est_msg, "📝 Prompt (%s): %s" % (roteirista.ULTIMA_FONTE[0], prompt_en[:140]))
             plano = self._est_plano_aparelho(offline_img)
             saida = self._est_gerar_medindo(offline_img, plano, prompt_en, saida, None,
                                             lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
