@@ -1757,6 +1757,16 @@ class TtokenApp(App):
         if len(prompt) < 3:
             self._est_msg("✍️ Escreva a ideia do video (minimo 3 letras).")
             return
+        if getattr(self, "_est_offline", False):
+            # MODO OFFLINE ligado: gera a imagem de verdade (SDXS no celular) em vez do desenho matematico (fractal).
+            # O fractal so aparece se o celular nao tiver o modelo.
+            try:
+                import offline_img
+                if offline_img.disponivel()[0]:
+                    self._est_img_offline()
+                    return
+            except Exception:
+                pass
         links = maestro_ttoken.carregar_links(self._pasta_dados())
         self.est_btn.disabled = True
         self.est_btn.text = "GERANDO..."
