@@ -1611,6 +1611,10 @@ class TtokenApp(App):
                                  hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
         self.est_chat.add_widget(self.est_inp)
         # --- principais (o que se usa): imagem e video offline, direto, sem configurar nada
+        self.est_idioma_chip = Chip("", height=40)
+        self.est_idioma_chip.bind(on_release=self._est_proximo_idioma)
+        self.est_chat.add_widget(self.est_idioma_chip)
+        self._est_idioma_rotulo()
         self._est_qual = "max"
         self.est_qual_chip = Chip("QUALIDADE: MAXIMA (512, estilo cinema)", height=40)
         self.est_qual_chip.bind(on_release=self._est_alternar_qual)
@@ -1786,6 +1790,20 @@ class TtokenApp(App):
             self.est_chat.remove_widget(self.est_mais)
             self.est_mais_chip.text = "MAIS OPCOES (servidor, Colab) +"
 
+    IDIOMAS_ROTA = ("Português do Brasil", "English", "Español", "Français", "Deutsch", "Italiano",
+                    "日本語", "中文", "한국어", "Русский", "العربية", "हिन्दी", "Türkçe")
+
+    def _est_idioma_rotulo(self):
+        self.est_idioma_chip.text = "IDIOMA DA NARRACAO E LEGENDA: %s  (toque para trocar)" % self.idioma
+
+    def _est_proximo_idioma(self, *_):
+        """Troca o idioma de saida (narracao, legenda e voz). Vale para o app todo (e o mesmo do menu IDIOMA)."""
+        lista = list(self.IDIOMAS_ROTA)
+        atual = self.idioma
+        i = lista.index(atual) if atual in lista else -1
+        self._definir_idioma(lista[(i + 1) % len(lista)])
+        self._est_idioma_rotulo()
+
     def _est_alternar_qual(self, *_):
         self._est_qual = "rapida" if self._est_qual == "max" else "max"
         self.est_qual_chip.text = ("QUALIDADE: MAXIMA (512, estilo cinema)" if self._est_qual == "max"
@@ -1864,7 +1882,7 @@ class TtokenApp(App):
                 else:
                     self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
-            plano = roteirista.montar_cenas(texto, llm=(self.llm if self._tem_chaves() else None))
+            plano = roteirista.montar_cenas(texto, llm=(self.llm if self._tem_chaves() else None), idioma=self.idioma)
             cenas = plano["cenas"]
             self._ui(self._est_msg, "🧠 Roteiro pronto (%s, idioma: %s): %d cenas." % (
                 plano.get("origem", ""), plano.get("idioma", "?"), len(cenas)))

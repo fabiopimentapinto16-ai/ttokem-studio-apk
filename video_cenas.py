@@ -11,7 +11,9 @@ import animador
 
 def _fonte(tam):
     for nome in ("DejaVuSans-Bold.ttf", "/system/fonts/Roboto-Bold.ttf", "/system/fonts/DroidSans-Bold.ttf",
-                 "/system/fonts/Roboto-Regular.ttf"):
+                 "/system/fonts/Roboto-Regular.ttf", "/system/fonts/NotoSansCJK-Regular.ttc",
+                 "/system/fonts/NotoSansCJKjp-Regular.otf", "/system/fonts/NotoSansArabic-Regular.ttf",
+                 "/system/fonts/NotoSansDevanagari-Regular.ttf", "/system/fonts/DroidSansFallback.ttf"):
         try:
             return ImageFont.truetype(nome, tam)
         except Exception:

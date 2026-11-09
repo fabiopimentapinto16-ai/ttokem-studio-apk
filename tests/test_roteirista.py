@@ -56,6 +56,28 @@ class TestRoteirista(unittest.TestCase):
         self.assertEqual(p["idioma"], "pt")
         self.assertEqual(p["cenas"][0]["narracao"], "Tudo comeca aqui.")
 
+    def test_idioma_de_saida_escolhido(self):
+        antes = r.traduzir
+        r.traduzir = lambda t, destino="en", timeout=8: (t + "@" + destino, "en")
+        try:
+            p = r.montar_cenas("a red apple", idioma="Português do Brasil", usar_ia=False)
+            self.assertEqual(p["idioma"], "pt")
+            self.assertEqual(p["cenas"][0]["narracao"], "Tudo comeca aqui.")        # falas prontas, sem traduzir
+            j = r.montar_cenas("a red apple", idioma="日本語", usar_ia=False)
+            self.assertEqual(j["idioma"], "ja")
+            self.assertTrue(j["cenas"][1]["narracao"].endswith("@ja"))               # sem falas prontas: traduz
+        finally:
+            r.traduzir = antes
+
+    def test_codigo_idioma(self):
+        self.assertEqual(r.codigo_idioma("Português do Brasil"), "pt")
+        self.assertEqual(r.codigo_idioma("English"), "en")
+        self.assertEqual(r.codigo_idioma("Español"), "es")
+        self.assertEqual(r.codigo_idioma("Japones"), "ja")
+        self.assertEqual(r.codigo_idioma("日本語"), "ja")
+        self.assertEqual(r.codigo_idioma("Swahili"), "sw")
+        self.assertEqual(r.codigo_idioma("xyzzy", padrao="en"), "en")
+
     def test_sem_tradutor_avisa(self):
         antes = r.traduzir_en
         r.traduzir_en = lambda t, timeout=8: None

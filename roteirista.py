@@ -14,7 +14,7 @@ SYSTEM_CENAS = (
     '"prompt": descricao visual da cena em INGLES, 25 a 45 palavras, concreta (sujeito, acao, local, luz, lente), '
     "realista, SEM texto na imagem, SEM pessoas famosas, cenas diferentes entre si e coerentes na historia. "
     '"narracao": 1 frase curta para ser falada (ate 18 palavras). '
-    '"legenda": ate 6 palavras. "narracao" e "legenda" ficam NO MESMO IDIOMA em que a ideia foi escrita (qualquer idioma), '
+    '"legenda": ate 6 palavras. "narracao" e "legenda" sao escritas em {IDIOMA} (a ideia pode vir em qualquer idioma), '
     'mas "prompt" e SEMPRE em INGLES. A cena 1 e um gancho forte; a ultima fecha com chamada para acao.')
 
 # planos de cinema: como contar a mesma ideia em 4 planos diferentes (funciona sem internet)
@@ -69,7 +69,7 @@ def cenas_offline(ideia, n=4, idioma="pt", ideia_en=None):
             if len(partes) >= 2:
                 xi = partes[0] + (", " + partes[min(k, len(partes) - 1)] if k >= 1 else "")
         modelo = PLANOS_LONGOS[k].replace("{x}", "{x}") if longa else PLANOS[k][0]
-        fala = FALAS[idioma][k] if idioma in FALAS else (legenda_orig if i == 0 else "")
+        fala = FALAS.get(idioma, FALAS["en"])[k]          # idioma sem falas prontas: ingles (o app traduz se houver internet)
         out.append({"prompt": estilizar(modelo.format(x=xi)), "narracao": fala, "legenda": titulo_curto(legenda_orig) if i == 0 else ""})
     return {"titulo": titulo_curto(legenda_orig), "cenas": out, "origem": "local", "idioma": idioma}
 
@@ -94,6 +94,37 @@ FALAS = {   # narracao do roteirista local (4 planos) nos idiomas mais comuns
     "de": ("Alles beginnt hier.", "Sieh dir dieses Detail an.", "Aus der Nahe noch besser.", "Bereit zum Erleben."),
     "it": ("Tutto comincia qui.", "Guarda questo dettaglio.", "Da vicino e ancora meglio.", "Pronto per essere vissuto."),
 }
+
+_NOMES = {   # nome (sem acento, minusculo) -> codigo. A pessoa pode escrever o idioma em portugues, ingles ou no proprio idioma
+    "pt": "portugues portuguese portugues do brasil brasil pt", "en": "english ingles en", "es": "espanol spanish es",
+    "fr": "francais frances french fr", "de": "deutsch alemao german de", "it": "italiano italian it",
+    "ja": "japones japanese nihongo ja", "zh": "chines chinese mandarim zhongwen zh", "ko": "coreano korean ko",
+    "ru": "russo russian ru", "ar": "arabe arabic ar", "hi": "hindi ou indiano hi", "tr": "turco turkish turkce tr",
+    "nl": "holandes dutch nederlands nl", "pl": "polones polish polski pl", "sv": "sueco swedish svenska sv",
+    "id": "indonesio indonesian id", "vi": "vietnamita vietnamese vi", "th": "tailandes thai th",
+    "uk": "ucraniano ukrainian uk", "el": "grego greek el", "he": "hebraico hebrew he", "ro": "romeno romanian ro",
+    "cs": "tcheco czech cs", "sw": "suaili swahili sw", "la": "latim latin la",
+}
+_NATIVOS = {"日本語": "ja", "中文": "zh", "汉语": "zh", "한국어": "ko", "русский": "ru", "العربية": "ar", "हिन्दी": "hi",
+            "türkçe": "tr", "ελληνικά": "el", "עברית": "he", "ไทย": "th", "українська": "uk"}
+NOMES_EXIBICAO = {"pt": "Português", "en": "English", "es": "Español", "fr": "Français", "de": "Deutsch", "it": "Italiano",
+                  "ja": "日本語", "zh": "中文", "ko": "한국어", "ru": "Русский", "ar": "العربية", "hi": "हिन्दी", "tr": "Türkçe"}
+
+
+def codigo_idioma(nome, padrao="pt"):
+    """'Português do Brasil' -> 'pt'; 'Japones' / '日本語' -> 'ja'. Nome desconhecido -> padrao."""
+    t = str(nome or "").strip()
+    if not t:
+        return padrao
+    if t.lower() in _NATIVOS:
+        return _NATIVOS[t.lower()]
+    if t in _NATIVOS:
+        return _NATIVOS[t]
+    s = _sem_acento(t)
+    for cod, nomes in _NOMES.items():
+        if s == cod or s in nomes.split(" ") or any(s.startswith(n) for n in nomes.split(" ") if len(n) >= 4):
+            return cod
+    return padrao
 
 
 def _sem_acento(t):
@@ -123,19 +154,23 @@ def locale_tts(cod):
     return LOCALE_TTS.get(cod, cod if len(str(cod)) == 2 and cod != "xx" else "en-US")
 
 
-def traduzir_en(texto, timeout=8):
-    """Traduz para ingles pelo servico gratis do Google Translate (precisa de internet; sem chave, nao oficial: pode
-    mudar). Devolve (ingles, idioma_origem) ou None."""
+def traduzir(texto, destino="en", timeout=8):
+    """Traduz para `destino` (codigo: 'pt','en','ja'...) pelo servico gratis do Google Translate (precisa de internet;
+    sem chave, nao oficial: pode mudar). Devolve (texto_traduzido, idioma_origem) ou None."""
     try:
         import requests
         r = requests.get("https://translate.googleapis.com/translate_a/single",
-                         params={"client": "gtx", "sl": "auto", "tl": "en", "dt": "t", "q": str(texto)[:500]},
+                         params={"client": "gtx", "sl": "auto", "tl": destino, "dt": "t", "q": str(texto)[:500]},
                          timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
         d = r.json()
         en = "".join(p[0] for p in d[0] if p and p[0]).strip()
         return (en, str(d[2])) if en else None
     except Exception:
         return None
+
+
+def traduzir_en(texto, timeout=8):
+    return traduzir(texto, "en", timeout)
 
 
 def _parse(texto):
@@ -151,7 +186,7 @@ def cenas_ia(ideia, llm, idioma="Portugues do Brasil", n=4):
     """Pede ao Maestro de IAs. Devolve o mesmo formato de cenas_offline, ou None se falhar (sem rede/chave/JSON ruim)."""
     try:
         raw, api = llm.chat([
-            {"role": "system", "content": SYSTEM_CENAS.replace("{N}", str(n))},
+            {"role": "system", "content": SYSTEM_CENAS.replace("{N}", str(n)).replace("{IDIOMA}", idioma)},
             {"role": "user", "content": "Ideia do video: %s" % str(ideia).strip()[:400]}], max_tokens=1100)
     except Exception:
         return None
@@ -166,45 +201,61 @@ def cenas_ia(ideia, llm, idioma="Portugues do Brasil", n=4):
     return {"titulo": str((d or {}).get("titulo", ""))[:60], "cenas": cenas[:n], "origem": "IA (%s)" % api}
 
 
-def montar_cenas(ideia_ou_linhas, llm=None, idioma="Portugues do Brasil", n=4, usar_ia=True, traduzir=True):
-    """Entrada: texto do usuario em QUALQUER idioma. Varias linhas = cada linha e uma cena. Uma linha = o cerebro cria
-    as cenas. Ordem para o prompt de imagem sair em ingles: 1) IA (traduz e roteiriza), 2) tradutor gratis (internet),
-    3) offline: usa o texto como esta (so funciona bem se ja estiver em ingles). O resultado traz "idioma" (codigo) para a voz."""
+def _no_idioma(texto, dest, origem):
+    """Texto no idioma de destino: traduz se for diferente (internet); senao devolve como esta."""
+    if not texto or dest == origem:
+        return texto
+    t = traduzir(texto, dest)
+    return t[0] if t else texto
+
+
+def montar_cenas(ideia_ou_linhas, llm=None, idioma="Portugues do Brasil", n=4, usar_ia=True, traduzir_ok=True):
+    """Entrada em QUALQUER idioma. `idioma` = idioma de SAIDA da narracao, da legenda e da voz (o que a pessoa escolheu).
+    O prompt de imagem sai sempre em ingles. Varias linhas = cada linha e uma cena; uma linha = o cerebro cria as cenas
+    (IA se houver; senao o roteirista local, com falas prontas em pt/en/es/fr/de/it e traducao pela internet nos demais).
+    Resultado traz "idioma" (codigo de saida) para a voz."""
     linhas = [l.strip() for l in str(ideia_ou_linhas or "").splitlines() if len(l.strip()) >= 3]
-    cod = detectar_idioma(" ".join(linhas))
+    ori = detectar_idioma(" ".join(linhas))
+    dest = codigo_idioma(idioma, padrao=ori if ori != "xx" else "en")
     if len(linhas) >= 2:
         cenas = []
         for l in linhas[:8]:
             en = l
-            if cod != "en" and traduzir:
+            if ori != "en" and traduzir_ok:
                 t = traduzir_en(l)
                 en = t[0] if t else l
-            cenas.append({"prompt": estilizar(en), "narracao": l, "legenda": l[:50]})
-        return {"titulo": linhas[0][:40], "origem": "suas linhas", "cenas": cenas, "idioma": cod}
+            fala = _no_idioma(l, dest, ori) if traduzir_ok else l
+            cenas.append({"prompt": estilizar(en), "narracao": fala, "legenda": fala[:50]})
+        return {"titulo": linhas[0][:40], "origem": "suas linhas", "cenas": cenas, "idioma": dest}
     ideia = linhas[0] if linhas else ""
     if usar_ia and llm is not None:
-        r = cenas_ia(ideia, llm, idioma, n)
-        if r:
-            r["idioma"] = cod
-            return r
+        r_ = cenas_ia(ideia, llm, NOME_IDIOMA.get(dest, str(idioma)), n)
+        if r_:
+            r_["idioma"] = dest
+            return r_
     ideia_en, aviso = ideia, ""
-    if cod != "en" and traduzir:
+    if ori != "en" and traduzir_ok:
         t = traduzir_en(ideia)
         if t:
-            ideia_en, cod = t[0], (t[1][:2] if len(t[1]) >= 2 else cod)
+            ideia_en = t[0]
         else:
             aviso = "sem tradutor: usei o texto como esta (em ingles a imagem sai melhor)"
-    r = cenas_offline(ideia, n, idioma=cod, ideia_en=ideia_en)
+    r_ = cenas_offline(ideia, n, idioma=dest, ideia_en=ideia_en)
+    if dest not in FALAS and traduzir_ok:                        # idioma sem falas prontas: traduz as de ingles
+        for c in r_["cenas"]:
+            c["narracao"] = _no_idioma(c["narracao"], dest, "en")
+    if r_["cenas"] and r_["cenas"][0]["legenda"]:
+        r_["cenas"][0]["legenda"] = _no_idioma(r_["cenas"][0]["legenda"], dest, ori) if traduzir_ok else r_["cenas"][0]["legenda"]
     if aviso:
-        r["aviso"] = aviso
-    return r
+        r_["aviso"] = aviso
+    return r_
 
 
-def prompt_imagem(texto, traduzir=True):
+def prompt_imagem(texto, traduzir_ok=True):
     """Para o botao GERAR IMAGEM: qualquer idioma -> prompt em ingles com o estilo Hollywood. Devolve (prompt, aviso)."""
     t = re.sub(r"\s+", " ", str(texto or "")).strip()
     cod, aviso = detectar_idioma(t), ""
-    if cod != "en" and traduzir:
+    if cod != "en" and traduzir_ok:
         tr = traduzir_en(t)
         if tr:
             t = tr[0]

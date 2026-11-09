@@ -31,7 +31,7 @@ class TestLook(unittest.TestCase):
         self.assertLess(out[:8, :8].mean(), out[60:68, 60:68].mean())
 
     def test_prompt_imagem_tem_estilo(self):
-        p, aviso = r.prompt_imagem("a red apple", traduzir=False)
+        p, aviso = r.prompt_imagem("a red apple", traduzir_ok=False)
         self.assertIn("cinematic", p)
         self.assertEqual(aviso, "")
 
