@@ -59,13 +59,19 @@ def abrir_ajustes_acesso():
 PORTA_RAPIDA = 8765
 
 
+ERRO_SERVIDOR = [""]
+
+
 def servidor_ativo():
     """True se o motor rapido (sdxs_servidor.py rodando no Pydroid) esta ligado neste celular."""
     try:
         import urllib.request
         with urllib.request.urlopen("http://127.0.0.1:%d/" % PORTA_RAPIDA, timeout=1.5) as r:
-            return b"ttoken-sdxs" in r.read(64)
-    except Exception:
+            ok = b"ttoken-sdxs" in r.read(64)
+            ERRO_SERVIDOR[0] = "" if ok else "respondeu algo diferente"
+            return ok
+    except Exception as e:
+        ERRO_SERVIDOR[0] = str(e)[:70]
         return False
 
 
@@ -129,7 +135,7 @@ def _gerar_png_bruto(prompt, saida, semente, lado, log, cache_mb=0):
     if servidor_ativo():
         log("motor rapido do Pydroid ligado")
         return _gerar_no_servidor(prompt, saida, semente, lado)
-    log("motor rapido desligado: usando o motor do app (lento, uns 12 min)")
+    log("motor rapido desligado (%s): usando o motor do app (lento, uns 12 min). Dica: no Pydroid deixe o app travado na lista de recentes e sem economia de bateria." % (ERRO_SERVIDOR[0] or "sem resposta"))
     pasta = achar_pasta()
     if pasta is None:
         raise RuntimeError("Nao achei a pasta sdxs_cubo em Download.")

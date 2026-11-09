@@ -107,7 +107,7 @@ class Aparelho:
             lado = 512
         cache = 2200 if liv >= 4500 else 0                         # RAM sobrando: mantem os pesos prontos (videos mais rapidos)
         est = self.estimar(lado, motor)
-        txt = "🧠 Aparelho: %.0f GFLOPS, %.1f GB livres → motor %s, %d px (~%s)" % (
+        txt = "🧠 Aparelho: %.1f GFLOPS, %.1f GB livres → motor %s, %d px (~%s)" % (
             self.d.get("gflops", 0), liv / 1024.0, "do app" if motor == "app" else "rapido do Pydroid", lado,
             ("%d s" % est) if est < 120 else ("%.0f min" % (est / 60.0)))
         return {"motor": motor, "lado": lado, "cache_mb": cache, "est_s": est, "texto": txt}
