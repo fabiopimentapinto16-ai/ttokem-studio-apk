@@ -52,4 +52,12 @@ def _link():
 
 
 threading.Thread(target=_link, daemon=True).start()
-uvicorn.run(app, host="127.0.0.1", port=8000)
+def _servidor():                     # thread propria: o Colab ja tem um loop de eventos rodando
+    import asyncio
+    asyncio.run(uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, log_level="warning")).serve())
+
+
+threading.Thread(target=_servidor, daemon=True).start()
+print("Refinador no ar. Deixe esta celula rodando.", flush=True)
+while True:
+    time.sleep(60)
