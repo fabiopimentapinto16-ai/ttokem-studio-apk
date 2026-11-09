@@ -104,14 +104,13 @@ def juntar_wavs(wavs, saida, folga=0.4):
     return durs
 
 
-def montar(imagens, legendas, saida, duracoes=None, fps=10, lado=384, transicao=0.5, semente=""):
-    """imagens: lista de caminhos; legendas: lista de textos (mesmo tamanho); duracoes: s por cena.
-    Grava o GIF em `saida` e devolve (saida, duracao_total_s)."""
+def quadros_das_cenas(imagens, legendas, duracoes=None, fps=10, lado=384, transicao=0.5, semente=""):
+    """Gera os quadros (PIL RGB) de todas as cenas, com camera, legenda e fusao. Devolve (quadros, fps)."""
     if not imagens:
         raise ValueError("sem imagens")
     legendas = list(legendas) + [""] * (len(imagens) - len(legendas))
     duracoes = list(duracoes or []) + [4.0] * (len(imagens) - len(duracoes or []))
-    fps = max(4, min(int(fps), 15))
+    fps = max(4, min(int(fps), 30))
     lado = max(128, min(int(lado), 512))
     quadros, ant = [], None
     for k, cam in enumerate(imagens):
@@ -133,7 +132,16 @@ def montar(imagens, legendas, saida, duracoes=None, fps=10, lado=384, transicao=
         for i in range(nt):                               # fusao suave com o fim da cena anterior
             cena[i] = Image.blend(ant, cena[i], (i + 1) / float(nt + 1))
         ant = cena[-1]
-        quadros.extend(q.quantize(colors=128, method=Image.FASTOCTREE) for q in cena)
+        quadros.extend(cena)
+    return quadros, fps
+
+
+def montar(imagens, legendas, saida, duracoes=None, fps=10, lado=384, transicao=0.5, semente=""):
+    """imagens: lista de caminhos; legendas: lista de textos (mesmo tamanho); duracoes: s por cena.
+    Grava o GIF em `saida` e devolve (saida, duracao_total_s)."""
+    fps = max(4, min(int(fps), 15))
+    cru, fps = quadros_das_cenas(imagens, legendas, duracoes, fps, lado, transicao, semente)
+    quadros = [q.quantize(colors=128, method=Image.FASTOCTREE) for q in cru]
     os.makedirs(os.path.dirname(os.path.abspath(saida)), exist_ok=True)
     tmp = saida + ".tmp"
     quadros[0].save(tmp, format="GIF", save_all=True, append_images=quadros[1:],

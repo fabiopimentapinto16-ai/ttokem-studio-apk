@@ -1971,17 +1971,29 @@ class TtokenApp(App):
             durs = video_cenas.juntar_wavs(wavs, narr)
             offline_img.liberar()
             self._ui(self._est_msg, "🎞️ Montando o video...")
-            gif, tot = video_cenas.montar(imgs, [c["legenda"] or c["narracao"] for c in cenas],
-                                          os.path.join(pasta, "video_cenas.gif"), durs, semente=cenas[0]["prompt"][:20],
-                                          lado=(448 if lado_img == 512 else 384))
+            legs = [c["legenda"] or c["narracao"] for c in cenas]
+            lado_v = 448 if lado_img == 512 else 384
             tem_voz = any(wavs)
+            try:                                              # MP4 de verdade (com a voz dentro); sem PyAV cai no GIF
+                import video_mp4
+                arq_v, tot = video_mp4.montar_mp4(imgs, legs, os.path.join(pasta, "video_cenas.mp4"), durs,
+                                                  wav=narr if tem_voz else "", lado=lado_v,
+                                                  semente=cenas[0]["prompt"][:20])
+                self._ui(self._est_video_cenas_fim, arq_v, "", tem_voz, os.path.splitext(arq_v)[0] + "_capa.png")
+                return
+            except Exception as e_mp4:
+                self._ui(self._est_msg, "ℹ️ MP4 indisponivel (%s): fiz GIF." % str(e_mp4)[:50])
+            gif, tot = video_cenas.montar(imgs, legs, os.path.join(pasta, "video_cenas.gif"), durs,
+                                          semente=cenas[0]["prompt"][:20], lado=lado_v)
             self._ui(self._est_video_cenas_fim, gif, narr if tem_voz else "", tem_voz)
         except Exception as e:
             self._ui(self._motor, False)
             self._ui(self._est_msg, "⚠️ Nao consegui montar o video: %s" % str(e)[:90])
 
-    def _est_video_cenas_fim(self, gif, narr, tem_voz):
-        self._est_fim({"arquivo": gif, "url": "", "origem": "celular"})
+    def _est_video_cenas_fim(self, gif, narr, tem_voz, capa=""):
+        self._est_fim({"arquivo": gif, "url": "", "origem": "celular", "capa": capa})
+        if tem_voz and capa:
+            return                                            # MP4: a voz ja esta dentro do video
         if tem_voz:
             b = Chip("OUVIR NARRACAO (toque junto com o video)", height=40)
             b.bind(on_release=lambda w: self._tocar_wav(narr))
@@ -2061,8 +2073,12 @@ class TtokenApp(App):
         self._notificar("Seu video esta pronto!", "Abra o Ttoken Studio.")
         self.est_res.clear_widgets()
         if res.get("arquivo"):
-            self.est_res.add_widget(Image(source=res["arquivo"], size_hint_y=None,
+            self.est_res.add_widget(Image(source=res.get("capa") or res["arquivo"], size_hint_y=None,
                                           height=dp(260), anim_delay=0.12, allow_stretch=True))
+            if res["arquivo"].lower().endswith(".mp4"):
+                v = Chip("ASSISTIR O VIDEO (com som)", height=40)
+                v.bind(on_release=self._est_assistir)
+                self.est_res.add_widget(v)
             b = Chip("SALVAR NA GALERIA", height=40)
             b.bind(on_release=self._est_salvar_arquivo)
             self.est_res.add_widget(b)
@@ -2089,10 +2105,31 @@ class TtokenApp(App):
             return
         try:
             env = autoclass("android.os.Environment")
-            SharedStorage().copy_to_shared(arq, collection=env.DIRECTORY_PICTURES)
+            SharedStorage().copy_to_shared(arq, collection=(env.DIRECTORY_MOVIES if arq.lower().endswith(".mp4")
+                                                            else env.DIRECTORY_PICTURES))
             botao.text = "SALVO NA GALERIA"
         except Exception as e:
             botao.text = "NAO SALVEI (%s)" % str(e)[:30]
+
+    def _est_assistir(self, *_):
+        """Abre o MP4 no player do Android (com som)."""
+        arq = (self._est_resultado or {}).get("arquivo")
+        if not arq or platform != "android":
+            return
+        try:
+            env = autoclass("android.os.Environment")
+            uri = SharedStorage().copy_to_shared(arq, collection=env.DIRECTORY_MOVIES)
+            Intent = autoclass("android.content.Intent")
+            Uri = autoclass("android.net.Uri")
+            ativ = autoclass("org.kivy.android.PythonActivity").mActivity
+            if isinstance(uri, str):
+                uri = Uri.parse(uri if "://" in uri else "file://" + uri)
+            it = Intent(Intent.ACTION_VIEW)
+            it.setDataAndType(uri, "video/mp4")
+            it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            ativ.startActivity(it)
+        except Exception as e:
+            self._est_msg("⚠️ Nao consegui abrir o player (%s). Use SALVAR NA GALERIA." % str(e)[:60])
 
     def _est_compartilhar(self, *_):
         arq = (self._est_resultado or {}).get("arquivo")
@@ -2101,7 +2138,8 @@ class TtokenApp(App):
         alvo = arq
         try:                                  # os apps (WhatsApp, Telegram...) nao leem a pasta privada: copia p/ a galeria antes
             env = autoclass("android.os.Environment")
-            alvo = SharedStorage().copy_to_shared(arq, collection=env.DIRECTORY_PICTURES) or arq
+            alvo = SharedStorage().copy_to_shared(arq, collection=(env.DIRECTORY_MOVIES if arq.lower().endswith(".mp4")
+                                                                   else env.DIRECTORY_PICTURES)) or arq
         except Exception:
             alvo = arq
         self._sheet = ShareSheet()
