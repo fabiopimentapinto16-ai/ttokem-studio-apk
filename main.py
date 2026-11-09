@@ -2075,11 +2075,20 @@ class TtokenApp(App):
         arq = (self._est_resultado or {}).get("arquivo")
         if not arq:
             return
+        alvo = arq
+        try:                                  # os apps (WhatsApp, Telegram...) nao leem a pasta privada: copia p/ a galeria antes
+            env = autoclass("android.os.Environment")
+            alvo = SharedStorage().copy_to_shared(arq, collection=env.DIRECTORY_PICTURES) or arq
+        except Exception:
+            alvo = arq
         self._sheet = ShareSheet()
         try:
-            self._sheet.share_file(arq)
+            self._sheet.share_file(alvo)
         except Exception as e:
-            self._est_msg("⚠️ Nao consegui abrir o compartilhamento: %s" % str(e)[:60])
+            try:
+                self._sheet.share_file(arq)
+            except Exception as e2:
+                self._est_msg("⚠️ Nao consegui abrir o compartilhamento: %s" % str(e2 or e)[:70])
 
     def _aba(self, chave):
         for k, c in self.abas.items():
