@@ -47,3 +47,25 @@ def refinar(png, prompt, url, saida=None, forca=FORCA_PADRAO, timeout=120, chave
         return saida
     except Exception:
         return None
+
+
+_CACHE = {"url": "", "ts": 0.0}
+
+
+def achar_link(manual, api, pasta_cache_s=120):
+    """Qual link usar: o colado a mao (se responder) ou o que o Colab registrou no backend. '' = sem refinador."""
+    import time
+    if manual and pronto(manual):
+        return _base(manual)
+    if _CACHE["url"] and time.time() - _CACHE["ts"] < pasta_cache_s:
+        return _CACHE["url"]
+    url = ""
+    try:
+        with urllib.request.urlopen(_base(api) + "/api/refinador/atual", timeout=8) as r:
+            d = json.loads(r.read(2000).decode("utf-8", "replace"))
+        if d.get("ok") and pronto(d.get("url", "")):
+            url = _base(d["url"])
+    except Exception:
+        url = ""
+    _CACHE["url"], _CACHE["ts"] = url, time.time()
+    return url

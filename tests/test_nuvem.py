@@ -35,3 +35,23 @@ class T(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TAchar(unittest.TestCase):
+    def test_achar_link_pelo_backend(self):
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        alvo = "http://127.0.0.1:%d" % srv.server_port
+
+        class Api(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                self.send_response(200); self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "url": alvo}).encode())
+        api = HTTPServer(("127.0.0.1", 0), Api)
+        threading.Thread(target=api.serve_forever, daemon=True).start()
+        nuvem._CACHE.update(url="", ts=0.0)
+        self.assertEqual(nuvem.achar_link("", "http://127.0.0.1:%d" % api.server_port), alvo)
+        nuvem._CACHE.update(url="", ts=0.0)
+        self.assertEqual(nuvem.achar_link("", "http://127.0.0.1:1"), "")
+        srv.shutdown(); api.shutdown()

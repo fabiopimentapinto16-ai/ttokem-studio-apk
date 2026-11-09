@@ -59,8 +59,36 @@ def _link():
     for ln in tun.stderr:
         m = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", ln)
         if m:
-            print("\n=== COLE ESTE LINK NO TTOKEN (LINK DO COLAB) ===\n" + m.group(0) + "\n", flush=True)
+            print("\n=== LINK DO REFINADOR (o Ttoken acha sozinho se o segredo estiver no Colab) ===\n" + m.group(0) + "\n", flush=True)
+            _avisar_backend(m.group(0))
             return
+
+
+API = "https://ttokem-backend-8ba2a.containers.snapdeploy.app"
+
+
+def _avisar_backend(url):
+    """Registra o link no backend (e reenvia a cada 5 min) para o app achar sozinho. Precisa do segredo
+    COLAB_SECRET em Colab > chave (Secrets) e igual ao COLAB_SECRET do backend. Nunca cole o segredo no codigo."""
+    try:
+        from google.colab import userdata
+        segredo = userdata.get("COLAB_SECRET")
+    except Exception:
+        segredo = ""
+    if not segredo:
+        print("Sem COLAB_SECRET nos Secrets do Colab: cole o link acima no app (LINK DO COLAB).", flush=True)
+        return
+    import requests
+
+    def _loop():
+        while True:
+            try:
+                r = requests.post(API + "/api/refinador/registrar", json={"url": url, "secret": segredo}, timeout=60)
+                print("registro no backend:", r.status_code, flush=True) if r.status_code != 200 else None
+            except Exception as e:
+                print("registro no backend falhou:", str(e)[:80], flush=True)
+            time.sleep(300)
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 threading.Thread(target=_link, daemon=True).start()

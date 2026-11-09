@@ -1837,10 +1837,11 @@ class TtokenApp(App):
         try:
             import nuvem
             links = maestro_ttoken.carregar_links(self._pasta_dados())
-            if not links["colab"] or not nuvem.pronto(links["colab"]):
+            alvo = nuvem.achar_link(links["colab"], API)      # colado a mao, ou o que o Colab registrou sozinho
+            if not alvo:
                 return saida
             self._ui(self._est_msg, "☁️ Refinando o detalhe na nuvem...")
-            novo = nuvem.refinar(saida, prompt, links["colab"], saida=saida[:-4] + "_nuvem.png", chave=links["chave"])
+            novo = nuvem.refinar(saida, prompt, alvo, saida=saida[:-4] + "_nuvem.png", chave=links["chave"])
             if novo:
                 self._ui(self._est_msg, "☁️ Detalhe refinado na nuvem.")
                 return novo
