@@ -99,8 +99,20 @@ def disponivel():
     return True, ""
 
 
-def gerar_png(prompt, saida, semente=None, lado=256, log=print):
-    """Gera a imagem e salva em PNG. Devolve o caminho."""
+def gerar_png(prompt, saida, semente=None, lado=256, log=print, look=1.0):
+    """Gera a imagem e salva em PNG. Devolve o caminho. look = forca do acabamento de cinema (0 = desliga)."""
+    _gerar_png_bruto(prompt, saida, semente, lado, log)
+    if look and look > 0:
+        try:
+            import look_cinema
+            from PIL import Image
+            look_cinema.aplicar(Image.open(saida), forca=look).save(saida)
+        except Exception as e:
+            log("acabamento de cinema nao aplicado: %s" % str(e)[:60])
+    return saida
+
+
+def _gerar_png_bruto(prompt, saida, semente, lado, log):
     if _MOT not in sys.path:
         sys.path.insert(0, _MOT)
     if semente is None:

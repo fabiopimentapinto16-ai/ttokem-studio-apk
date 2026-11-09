@@ -1611,6 +1611,10 @@ class TtokenApp(App):
                                  hint_text_color=alpha(MUTED, 0.8), cursor_color=CYAN)
         self.est_chat.add_widget(self.est_inp)
         # --- principais (o que se usa): imagem e video offline, direto, sem configurar nada
+        self._est_qual = "max"
+        self.est_qual_chip = Chip("QUALIDADE: MAXIMA (512, estilo cinema)", height=40)
+        self.est_qual_chip.bind(on_release=self._est_alternar_qual)
+        self.est_chat.add_widget(self.est_qual_chip)
         img_off = NeonButton("GERAR IMAGEM (offline, gratis)", height=dp(48))
         img_off.bind(on_release=self._est_img_offline)
         self.est_chat.add_widget(img_off)
@@ -1782,6 +1786,17 @@ class TtokenApp(App):
             self.est_chat.remove_widget(self.est_mais)
             self.est_mais_chip.text = "MAIS OPCOES (servidor, Colab) +"
 
+    def _est_alternar_qual(self, *_):
+        self._est_qual = "rapida" if self._est_qual == "max" else "max"
+        self.est_qual_chip.text = ("QUALIDADE: MAXIMA (512, estilo cinema)" if self._est_qual == "max"
+                                   else "QUALIDADE: RAPIDA (256, estilo cinema)")
+
+    def _est_lado(self, offline_img):
+        """512 px (qualidade maxima) so com o motor rapido do Pydroid; sem ele fica em 256 (o motor do app e lento)."""
+        if self._est_qual == "max" and offline_img.servidor_ativo():
+            return 512
+        return 256
+
     def _est_img_offline(self, *_):
         prompt = (self.est_inp.text or "").strip()
         if len(prompt) < 3:
@@ -1805,9 +1820,16 @@ class TtokenApp(App):
                 else:
                     self._ui(self._est_msg, "⚠️ Offline indisponivel: %s." % motivo)
                 return
+            import roteirista
             saida = os.path.join(self._pasta_dados(), "ttoken_img_%s.png" %
                                  time.strftime("%Y%m%d_%H%M%S"))
-            offline_img.gerar_png(prompt, saida, lado=256,
+            prompt_en, aviso = roteirista.prompt_imagem(prompt)
+            if aviso:
+                self._ui(self._est_msg, "ℹ️ " + aviso)
+            lado = self._est_lado(offline_img)
+            self._ui(self._est_msg, "🎬 Estilo cinema, %d px%s" % (lado, "" if lado == 512 else
+                     " (para 512 px ligue o motor rapido do Pydroid)"))
+            offline_img.gerar_png(prompt_en, saida, lado=lado,
                                   log=lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
@@ -1850,11 +1872,14 @@ class TtokenApp(App):
                 self._ui(self._est_msg, "ℹ️ " + plano["aviso"])
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
+            lado_img = self._est_lado(offline_img)
+            self._ui(self._est_msg, "🎬 Estilo cinema, %d px por cena%s" % (lado_img, "" if lado_img == 512 else
+                     " (para 512 px ligue o motor rapido do Pydroid)"))
             imgs = []
             for i, c in enumerate(cenas):
                 self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c["prompt"][:70]))
                 imgs.append(offline_img.gerar_png(c["prompt"], os.path.join(pasta, "cena_%02d.png" % i),
-                                                  semente=i + 1, lado=256))
+                                                  semente=i + 1, lado=lado_img))
             self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
             wavs = tts_android.sintetizar([c["narracao"] for c in cenas], pasta,
                                           idioma=roteirista.locale_tts(plano.get("idioma", "en")))
@@ -1862,7 +1887,8 @@ class TtokenApp(App):
             durs = video_cenas.juntar_wavs(wavs, narr)
             self._ui(self._est_msg, "🎞️ Montando o video...")
             gif, tot = video_cenas.montar(imgs, [c["legenda"] or c["narracao"] for c in cenas],
-                                          os.path.join(pasta, "video_cenas.gif"), durs, semente=cenas[0]["prompt"][:20])
+                                          os.path.join(pasta, "video_cenas.gif"), durs, semente=cenas[0]["prompt"][:20],
+                                          lado=(448 if lado_img == 512 else 384))
             tem_voz = any(wavs)
             self._ui(self._est_video_cenas_fim, gif, narr if tem_voz else "", tem_voz)
         except Exception as e:

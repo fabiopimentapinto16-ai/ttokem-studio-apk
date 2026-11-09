@@ -5,7 +5,8 @@ import json
 import re
 
 # estilo que o SDXS/DreamShaper entende bem: foto realista, luz de cinema, sem texto na imagem
-ESTILO = "photorealistic, cinematic lighting, 35mm photo, shallow depth of field, highly detailed, sharp focus"
+ESTILO = ("RAW photo, cinematic film still, soft directional key light, creamy bokeh, rich film color grade, "
+          "deep blacks, luminous highlights, anamorphic 35mm, highly detailed, sharp focus")
 
 SYSTEM_CENAS = (
     "Voce e diretor de cena de videos curtos verticais para redes sociais. Responda SOMENTE com JSON valido: "
@@ -197,3 +198,16 @@ def montar_cenas(ideia_ou_linhas, llm=None, idioma="Portugues do Brasil", n=4, u
     if aviso:
         r["aviso"] = aviso
     return r
+
+
+def prompt_imagem(texto, traduzir=True):
+    """Para o botao GERAR IMAGEM: qualquer idioma -> prompt em ingles com o estilo Hollywood. Devolve (prompt, aviso)."""
+    t = re.sub(r"\s+", " ", str(texto or "")).strip()
+    cod, aviso = detectar_idioma(t), ""
+    if cod != "en" and traduzir:
+        tr = traduzir_en(t)
+        if tr:
+            t = tr[0]
+        else:
+            aviso = "sem tradutor: usei o texto como esta (em ingles a imagem sai melhor)"
+    return estilizar(_limpar_ideia(t, 40)), aviso
