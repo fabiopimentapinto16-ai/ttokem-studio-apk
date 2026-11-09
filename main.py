@@ -1809,11 +1809,28 @@ class TtokenApp(App):
         self.est_qual_chip.text = ("QUALIDADE: MAXIMA (512, estilo cinema)" if self._est_qual == "max"
                                    else "QUALIDADE: RAPIDA (256, estilo cinema)")
 
-    def _est_lado(self, offline_img):
-        """512 px (qualidade maxima) so com o motor rapido do Pydroid; sem ele fica em 256 (o motor do app e lento)."""
-        if self._est_qual == "max" and offline_img.servidor_ativo():
-            return 512
-        return 256
+    def _est_plano_aparelho(self, offline_img):
+        """Autoevolutivo: mede o celular (1a vez, a cada 14 dias ou se o aparelho mudou), aprende com os tempos reais e
+        escolhe motor, resolucao (256/512) e cache de RAM. Num celular melhor passa a usar 512 px e o motor do app sozinho."""
+        import aparelho
+        ap = aparelho.Aparelho(self._pasta_dados())
+        if ap.medir_se_preciso():
+            self._ui(self._est_msg, "📊 Primeira vez neste celular: medi a velocidade (%.0f GFLOPS)." % ap.d.get("gflops", 0))
+        plano = ap.decidir("max" if self._est_qual == "max" else "rapida", offline_img.servidor_ativo())
+        plano["ap"] = ap
+        self._ui(self._est_msg, plano["texto"])
+        return plano
+
+    def _est_gerar_medindo(self, offline_img, plano, prompt, saida, semente, log):
+        """Gera 1 imagem e ensina o perfil (tempo real; se faltar memoria, lembra para nao tentar de novo)."""
+        t0 = time.time()
+        try:
+            offline_img.gerar_png(prompt, saida, semente=semente, lado=plano["lado"], log=log, cache_mb=plano["cache_mb"])
+        except MemoryError:
+            plano["ap"].registrar(plano["motor"], plano["lado"], 0, falta_memoria=True)
+            raise
+        plano["ap"].registrar(plano["motor"], plano["lado"], time.time() - t0)
+        return saida
 
     def _est_img_offline(self, *_):
         prompt = (self.est_inp.text or "").strip()
@@ -1844,11 +1861,9 @@ class TtokenApp(App):
             prompt_en, aviso = roteirista.prompt_imagem(prompt)
             if aviso:
                 self._ui(self._est_msg, "ℹ️ " + aviso)
-            lado = self._est_lado(offline_img)
-            self._ui(self._est_msg, "🎬 Estilo cinema, %d px%s" % (lado, "" if lado == 512 else
-                     " (para 512 px ligue o motor rapido do Pydroid)"))
-            offline_img.gerar_png(prompt_en, saida, lado=lado,
-                                  log=lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
+            plano = self._est_plano_aparelho(offline_img)
+            self._est_gerar_medindo(offline_img, plano, prompt_en, saida, None,
+                                    lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
             self._ui(self._motor, False)
@@ -1890,19 +1905,20 @@ class TtokenApp(App):
                 self._ui(self._est_msg, "ℹ️ " + plano["aviso"])
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
-            lado_img = self._est_lado(offline_img)
-            self._ui(self._est_msg, "🎬 Estilo cinema, %d px por cena%s" % (lado_img, "" if lado_img == 512 else
-                     " (para 512 px ligue o motor rapido do Pydroid)"))
+            plano_ap = self._est_plano_aparelho(offline_img)
+            lado_img = plano_ap["lado"]
             imgs = []
             for i, c in enumerate(cenas):
                 self._ui(self._est_msg, "🖼️ Cena %d/%d: %s" % (i + 1, len(cenas), c["prompt"][:70]))
-                imgs.append(offline_img.gerar_png(c["prompt"], os.path.join(pasta, "cena_%02d.png" % i),
-                                                  semente=i + 1, lado=lado_img))
+                imgs.append(self._est_gerar_medindo(offline_img, plano_ap, c["prompt"],
+                                                    os.path.join(pasta, "cena_%02d.png" % i), i + 1,
+                                                    lambda t: None))
             self._ui(self._est_msg, "🔊 Gerando a voz (se o celular tiver voz offline)...")
             wavs = tts_android.sintetizar([c["narracao"] for c in cenas], pasta,
                                           idioma=roteirista.locale_tts(plano.get("idioma", "en")))
             narr = os.path.join(pasta, "narracao.wav")
             durs = video_cenas.juntar_wavs(wavs, narr)
+            offline_img.liberar()
             self._ui(self._est_msg, "🎞️ Montando o video...")
             gif, tot = video_cenas.montar(imgs, [c["legenda"] or c["narracao"] for c in cenas],
                                           os.path.join(pasta, "video_cenas.gif"), durs, semente=cenas[0]["prompt"][:20],

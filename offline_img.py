@@ -99,9 +99,9 @@ def disponivel():
     return True, ""
 
 
-def gerar_png(prompt, saida, semente=None, lado=256, log=print, look=1.0):
+def gerar_png(prompt, saida, semente=None, lado=256, log=print, look=1.0, cache_mb=0):
     """Gera a imagem e salva em PNG. Devolve o caminho. look = forca do acabamento de cinema (0 = desliga)."""
-    _gerar_png_bruto(prompt, saida, semente, lado, log)
+    _gerar_png_bruto(prompt, saida, semente, lado, log, cache_mb)
     if look and look > 0:
         try:
             import look_cinema
@@ -112,7 +112,16 @@ def gerar_png(prompt, saida, semente=None, lado=256, log=print, look=1.0):
     return saida
 
 
-def _gerar_png_bruto(prompt, saida, semente, lado, log):
+def liberar():
+    """Solta os pesos mantidos na RAM (chamar quando um video termina)."""
+    try:
+        if "pipeline_sdxs" in sys.modules:
+            sys.modules["pipeline_sdxs"].liberar_cache()
+    except Exception:
+        pass
+
+
+def _gerar_png_bruto(prompt, saida, semente, lado, log, cache_mb=0):
     if _MOT not in sys.path:
         sys.path.insert(0, _MOT)
     if semente is None:
@@ -128,6 +137,6 @@ def _gerar_png_bruto(prompt, saida, semente, lado, log):
     from PIL import Image
     if semente is None:
         semente = int(time.time()) % 100000
-    img = ps.gerar(pasta, prompt, semente=semente, lado=lado, log=log)
+    img = ps.gerar(pasta, prompt, semente=semente, lado=lado, log=log, cache_mb=cache_mb)
     Image.fromarray(img).save(saida)
     return saida

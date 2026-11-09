@@ -1,0 +1,113 @@
+"""Perfil do aparelho (autoevolutivo): mede o celular, escolhe o melhor motor/resolucao e aprende com cada imagem gerada.
+Instalou num celular melhor? Na 1a geracao ele mede de novo e passa a usar 512 px, mais RAM e o motor mais rapido sozinho.
+Guarda tudo em perfil_aparelho.json (so neste celular)."""
+import json
+import os
+import statistics
+import time
+
+TRABALHO_GFLOP = {256: 1100.0, 512: 2400.0}     # trabalho do modelo por imagem (medido no A5: ~44 s a 25 GFLOPS e ~96 s)
+VALIDADE_S = 14 * 86400                          # mede de novo a cada 14 dias
+LIMITE_APP_256_S = 90                            # se o motor do app faz 256 px em ate 90 s, nao precisa do Pydroid
+LIMITE_512_S = 240                               # 512 px so se levar ate 4 min por imagem
+
+
+def ram_mb():
+    """(total, disponivel) em MB, lendo /proc/meminfo (Android/Linux). (0, 0) se nao der."""
+    try:
+        d = {}
+        with open("/proc/meminfo") as f:
+            for ln in f:
+                k, v = ln.split(":")
+                d[k] = int(v.split()[0]) / 1024.0
+        return d.get("MemTotal", 0), d.get("MemAvailable", d.get("MemFree", 0))
+    except Exception:
+        return 0.0, 0.0
+
+
+def medir_gflops():
+    """GFLOPS reais do motor do app (usa a mesma multiplicacao do motor, com varios nucleos se ajudar)."""
+    import numpy as np
+    try:
+        import motor_cubico as mc
+        mc.configurar_hilos()
+        mm = mc.mm
+    except Exception:
+        mm = np.matmul
+    a = np.random.rand(512, 512).astype(np.float32)
+    b = np.random.rand(512, 512).astype(np.float32)
+    mm(a, b)
+    t = time.time()
+    for _ in range(4):
+        mm(a, b)
+    return 2.0 * 512 ** 3 / ((time.time() - t) / 4) / 1e9
+
+
+class Aparelho:
+    def __init__(self, pasta, medidor=medir_gflops, relogio=time.time):
+        self.arq = os.path.join(pasta, "perfil_aparelho.json")
+        self.medidor, self.relogio = medidor, relogio
+        self.d = {}
+        try:
+            with open(self.arq, encoding="utf-8") as f:
+                self.d = json.load(f)
+        except Exception:
+            self.d = {}
+
+    def _salvar(self):
+        try:
+            with open(self.arq, "w", encoding="utf-8") as f:
+                json.dump(self.d, f)
+        except Exception:
+            pass
+
+    def medir_se_preciso(self, forcar=False):
+        """Mede na 1a vez, a cada 14 dias, ou quando o aparelho mudou (RAM/nucleos diferentes). Devolve True se mediu."""
+        tot, liv = ram_mb()
+        nuc = os.cpu_count() or 1
+        mudou = abs(self.d.get("ram_total", 0) - tot) > 256 or self.d.get("nuc") != nuc
+        velho = self.relogio() - self.d.get("quando", 0) > VALIDADE_S
+        if not forcar and self.d.get("gflops") and not mudou and not velho:
+            self.d["ram_livre"] = liv
+            return False
+        hist = {} if mudou else self.d.get("hist", {})          # aparelho novo: esquece o que aprendeu no outro
+        self.d = {"gflops": float(self.medidor()), "ram_total": tot, "ram_livre": liv, "nuc": nuc,
+                  "quando": self.relogio(), "hist": hist, "sem_512": False if mudou else self.d.get("sem_512", False)}
+        self._salvar()
+        return True
+
+    def estimar(self, lado, motor="app"):
+        """Segundos esperados para 1 imagem: usa o que ja foi medido de verdade (mediana das ultimas 3); senao a conta."""
+        h = self.d.get("hist", {}).get("%s:%d" % (motor, lado), [])
+        if h:
+            return statistics.median(h[-3:])
+        if motor == "pydroid":
+            return 45.0 if lado == 256 else 95.0                   # medido no A5; melhora/piora conforme o historico
+        return TRABALHO_GFLOP[lado] / max(self.d.get("gflops", 1.0), 0.1)
+
+    def registrar(self, motor, lado, segundos, falta_memoria=False):
+        """Aprende: guarda o tempo real; se faltou memoria em 512, nao tenta 512 de novo."""
+        if falta_memoria:
+            if lado == 512:
+                self.d["sem_512"] = True
+        else:
+            h = self.d.setdefault("hist", {}).setdefault("%s:%d" % (motor, lado), [])
+            h.append(round(float(segundos), 1))
+            del h[:-6]
+        self._salvar()
+
+    def decidir(self, qualidade="max", servidor_ativo=False):
+        """Escolhe motor, resolucao e cache. Devolve dict: motor, lado, cache_mb, est_s, texto."""
+        liv = self.d.get("ram_livre", 0)
+        app_256 = self.estimar(256, "app")
+        motor = "app" if (app_256 <= LIMITE_APP_256_S or not servidor_ativo) else "pydroid"
+        lado = 256
+        if (qualidade == "max" and not self.d.get("sem_512") and self.estimar(512, motor) <= LIMITE_512_S
+                and (liv >= 900 or liv == 0)):
+            lado = 512
+        cache = 2200 if liv >= 4500 else 0                         # RAM sobrando: mantem os pesos prontos (videos mais rapidos)
+        est = self.estimar(lado, motor)
+        txt = "🧠 Aparelho: %.0f GFLOPS, %.1f GB livres → motor %s, %d px (~%s)" % (
+            self.d.get("gflops", 0), liv / 1024.0, "do app" if motor == "app" else "rapido do Pydroid", lado,
+            ("%d s" % est) if est < 120 else ("%.0f min" % (est / 60.0)))
+        return {"motor": motor, "lado": lado, "cache_mb": cache, "est_s": est, "texto": txt}
