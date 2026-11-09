@@ -151,6 +151,12 @@ def configurar_hilos(n=None, log=None, forcar=None):
         return _HILOS
     configurar_hilos.feito = True
     nuc = n or os.cpu_count() or 1
+    if _tg is not None and forcar is None:                  # matmul propria multi-thread: ja usa os nucleos sozinha
+        _NT_TG[0] = max(1, min(8, nuc))
+        _HILOS = 1
+        if log:
+            log("matmul propria (ttgemm) com %d threads" % _NT_TG[0])
+        return _NT_TG[0]
     if forcar is False or nuc < 2:
         _HILOS = 1
         return 1

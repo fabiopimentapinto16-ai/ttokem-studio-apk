@@ -43,6 +43,17 @@ def medir_gflops():
     return 2.0 * 512 ** 3 / ((time.time() - t) / 4) / 1e9
 
 
+MOTOR_GERACAO = "k2"        # troque ao mudar o motor de contas: a medida e os tempos antigos deixam de valer
+
+
+def versao_motor():
+    try:
+        import ttgemm  # noqa: F401
+        return "tg-" + MOTOR_GERACAO
+    except Exception:
+        return "np-" + MOTOR_GERACAO
+
+
 class Aparelho:
     def __init__(self, pasta, medidor=medir_gflops, relogio=time.time):
         self.arq = os.path.join(pasta, "perfil_aparelho.json")
@@ -66,13 +77,14 @@ class Aparelho:
         tot, liv = ram_mb()
         nuc = os.cpu_count() or 1
         mudou = abs(self.d.get("ram_total", 0) - tot) > 256 or self.d.get("nuc") != nuc
+        motor_novo = self.d.get("motor_v") != versao_motor()          # APK novo com motor diferente: mede de novo
         velho = self.relogio() - self.d.get("quando", 0) > VALIDADE_S
-        if not forcar and self.d.get("gflops") and not mudou and not velho:
+        if not forcar and self.d.get("gflops") and not mudou and not velho and not motor_novo:
             self.d["ram_livre"] = liv
             return False
-        hist = {} if mudou else self.d.get("hist", {})          # aparelho novo: esquece o que aprendeu no outro
+        hist = {} if (mudou or motor_novo) else self.d.get("hist", {})   # aparelho/motor novo: esquece o que aprendeu antes
         self.d = {"gflops": float(self.medidor()), "ram_total": tot, "ram_livre": liv, "nuc": nuc,
-                  "quando": self.relogio(), "hist": hist, "sem_512": False if mudou else self.d.get("sem_512", False)}
+                  "quando": self.relogio(), "hist": hist, "motor_v": versao_motor(), "sem_512": False if mudou else self.d.get("sem_512", False)}
         self._salvar()
         return True
 

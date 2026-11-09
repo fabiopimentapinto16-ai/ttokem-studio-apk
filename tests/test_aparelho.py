@@ -73,3 +73,19 @@ class TestAparelho(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TMotorNovo(unittest.TestCase):
+    def test_medida_antiga_de_outro_motor_e_refeita(self):
+        import tempfile, json, os
+        import aparelho
+        with tempfile.TemporaryDirectory() as d:
+            ap = aparelho.Aparelho(d, medidor=lambda: 0.1)
+            ap.medir_se_preciso()
+            ap2 = aparelho.Aparelho(d, medidor=lambda: 9.0)
+            self.assertFalse(ap2.medir_se_preciso())          # mesmo motor: reaproveita
+            dd = json.load(open(os.path.join(d, "perfil_aparelho.json"))); dd["motor_v"] = "antigo"
+            json.dump(dd, open(os.path.join(d, "perfil_aparelho.json"), "w"))
+            ap3 = aparelho.Aparelho(d, medidor=lambda: 9.0)
+            self.assertTrue(ap3.medir_se_preciso())           # motor diferente: mede de novo
+            self.assertEqual(ap3.d["gflops"], 9.0)
