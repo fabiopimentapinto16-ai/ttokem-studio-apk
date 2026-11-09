@@ -1830,6 +1830,23 @@ class TtokenApp(App):
             plano["ap"].registrar(plano["motor"], plano["lado"], 0, falta_memoria=True)
             raise
         plano["ap"].registrar(plano["motor"], plano["lado"], time.time() - t0)
+        return self._est_refinar_nuvem(saida, prompt)
+
+    def _est_refinar_nuvem(self, saida, prompt):
+        """Detalhe na nuvem (so se houver link do Colab refinador e internet). Qualquer falha: fica o rascunho."""
+        try:
+            import nuvem
+            links = maestro_ttoken.carregar_links(self._pasta_dados())
+            if not links["colab"] or not nuvem.pronto(links["colab"]):
+                return saida
+            self._ui(self._est_msg, "☁️ Refinando o detalhe na nuvem...")
+            novo = nuvem.refinar(saida, prompt, links["colab"], saida=saida[:-4] + "_nuvem.png", chave=links["chave"])
+            if novo:
+                self._ui(self._est_msg, "☁️ Detalhe refinado na nuvem.")
+                return novo
+            self._ui(self._est_msg, "☁️ Nuvem nao respondeu: ficou o rascunho do celular.")
+        except Exception:
+            pass
         return saida
 
     def _est_img_offline(self, *_):
@@ -1862,8 +1879,8 @@ class TtokenApp(App):
             if aviso:
                 self._ui(self._est_msg, "ℹ️ " + aviso)
             plano = self._est_plano_aparelho(offline_img)
-            self._est_gerar_medindo(offline_img, plano, prompt_en, saida, None,
-                                    lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
+            saida = self._est_gerar_medindo(offline_img, plano, prompt_en, saida, None,
+                                            lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
             self._ui(self._motor, False)
