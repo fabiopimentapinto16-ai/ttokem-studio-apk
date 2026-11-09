@@ -4,6 +4,17 @@
 # Licenca do SDXL-Turbo: uso nao comercial/pesquisa (veja a pagina do modelo).
 import subprocess, sys, os, re, time, threading, base64, io
 
+# Guarda o modelo (7 GB) e o tunel no seu Google Drive: nas proximas vezes nao baixa de novo.
+try:
+    from google.colab import drive
+    drive.mount("/content/drive")
+    PASTA = "/content/drive/MyDrive/ttoken_refinador"
+    os.makedirs(PASTA, exist_ok=True)
+    os.environ["HF_HOME"] = PASTA + "/hf"
+except Exception as e:
+    print("Drive nao montou (%s): sigo sem guardar." % e)
+    PASTA = "."
+
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "transformers", "accelerate",
                 "fastapi", "uvicorn", "pillow"], check=True)
 
@@ -38,9 +49,10 @@ async def refinar(req: Request):
     return Response(b.getvalue(), media_type="image/png")
 
 
-if not os.path.exists("cloudflared"):
-    subprocess.run("wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared && chmod +x cloudflared", shell=True, check=True)
-tun = subprocess.Popen(["./cloudflared", "tunnel", "--url", "http://localhost:8000"], stderr=subprocess.PIPE, text=True)
+CF = PASTA + "/cloudflared"
+if not os.path.exists(CF):
+    subprocess.run("wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O %s && chmod +x %s" % (CF, CF), shell=True, check=True)
+tun = subprocess.Popen([CF, "tunnel", "--url", "http://localhost:8000"], stderr=subprocess.PIPE, text=True)
 
 
 def _link():
