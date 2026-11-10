@@ -20,17 +20,20 @@ class TMp4(unittest.TestCase):
             w = os.path.join(d, "n.wav")
             with wave.open(w, "wb") as f:
                 f.setnchannels(1); f.setsampwidth(2); f.setframerate(22050)
-                f.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / 8.0))) for i in range(22050 * 3)))
-            out, dur = video_mp4.montar_mp4(imgs, ["um", "dois", "tres"], os.path.join(d, "v.mp4"), [1.0, 1.0, 1.0], wav=w, fps=15, lado=256)
+                f.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(i / 8.0))) for i in range(int(22050 * 4.5))))
+            out, dur = video_mp4.montar_mp4(imgs, ["um", "dois", "tres"], os.path.join(d, "v.mp4"), [1.5, 1.5, 1.5], wav=w, fps=15, lado=256)
             self.assertTrue(os.path.getsize(out) > 2000)
             self.assertTrue(os.path.exists(os.path.join(d, "v_capa.png")))
             c = av.open(out)
             tipos = {s.type: s.codec_context.name for s in c.streams}
             self.assertEqual(tipos.get("video"), "h264")
             self.assertEqual(tipos.get("audio"), "aac")
-            self.assertAlmostEqual(c.duration / 1e6, 3.0, delta=0.6)
+            self.assertAlmostEqual(c.duration / 1e6, 4.5, delta=0.6)
+            dur_a = float(c.streams.audio[0].duration * c.streams.audio[0].time_base)
+            dur_v = float(c.streams.video[0].duration * c.streams.video[0].time_base)
+            self.assertAlmostEqual(dur_a, dur_v, delta=0.3)            # som e imagem terminam juntos
             n = sum(1 for _ in c.decode(video=0))
-            self.assertGreaterEqual(n, 40)
+            self.assertGreaterEqual(n, 60)
             c.close()
 
     def test_mp4_sem_audio(self):
