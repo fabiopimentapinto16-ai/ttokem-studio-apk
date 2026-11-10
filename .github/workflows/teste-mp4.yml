@@ -15,6 +15,10 @@ jobs:
         with:
           python-version: '3.10'
       - name: Instalar
-        run: pip install "av==11.0.0" pillow numpy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
+          pip install "cython==0.29.36" pillow numpy
+          pip install --no-build-isolation "av==10.0.0"
       - name: Testar o MP4 com audio
         run: python -m unittest tests.test_mp4 -v
