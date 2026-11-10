@@ -13,7 +13,9 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers(); self.wfile.write(b"ttoken-refinador ok")
     def do_POST(self):
         d = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        assert d["prompt"] and base64.b64decode(d["imagem_b64"])
+        assert d["prompt"]
+        if self.path.endswith("/refinar"):
+            assert base64.b64decode(d["imagem_b64"])
         self.send_response(200); self.send_header("Content-Type", "image/png"); self.end_headers(); self.wfile.write(PNG)
 
 
@@ -28,6 +30,9 @@ class T(unittest.TestCase):
             self.assertTrue(nuvem.pronto(url))
             out = nuvem.refinar(p, "a cat", url)
             self.assertTrue(out and os.path.exists(out))
+            g = nuvem.gerar("a cat", url, os.path.join(d, "g.png"), semente=7)
+            self.assertTrue(g and open(g, "rb").read().startswith(b"\x89PNG"))
+            self.assertIsNone(nuvem.gerar("a cat", "http://127.0.0.1:1", os.path.join(d, "x.png")))
             self.assertIsNone(nuvem.refinar(p, "a cat", "http://127.0.0.1:1"))
             self.assertIsNone(nuvem.refinar(p, "a cat", ""))
         srv.shutdown()

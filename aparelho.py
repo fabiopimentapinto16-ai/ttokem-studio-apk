@@ -28,6 +28,10 @@ def ram_mb():
 def medir_gflops():
     """GFLOPS reais do motor do app (usa a mesma multiplicacao do motor, com varios nucleos se ajudar)."""
     import numpy as np
+    import sys
+    mot = os.path.join(os.path.dirname(os.path.abspath(__file__)), "motor_offline")
+    if os.path.isdir(mot) and mot not in sys.path:
+        sys.path.insert(0, mot)                              # o motor mora em motor_offline/ (antes a medida nao o achava)
     try:
         import motor_cubico as mc
         mc.configurar_hilos()
@@ -52,6 +56,38 @@ def versao_motor():
         return "tg-" + MOTOR_GERACAO
     except Exception:
         return "np-" + MOTOR_GERACAO
+
+
+def diagnostico(pasta_modelo=None):
+    """Mede onde o tempo vai: matmul (GFLOPS), conta simples (milhoes de numeros/s) e leitura de arquivo (MB/s)."""
+    import numpy as np
+    d = {"gflops": round(medir_gflops(), 1)}
+    x = np.random.rand(4_000_000).astype(np.float32)
+    y = x.copy()
+    t = time.time()
+    for _ in range(5):
+        y = y * 1.0001 + x
+    d["conta_simples_mps"] = round(5 * 2 * 4.0 / (time.time() - t + 1e-9), 0)      # M numeros/s (mul+add)
+    q = (np.random.rand(4_000_000) * 255).astype(np.uint8)
+    t = time.time()
+    for _ in range(3):
+        w = (q.astype(np.float32) - 128.0) * 0.01
+    d["dequant_mps"] = round(3 * 4.0 / (time.time() - t + 1e-9), 0)                # M pesos/s (int8 -> float)
+    try:
+        if pasta_modelo:
+            arq = os.path.join(pasta_modelo, "sdxs_texto_q8.ttq")
+            t = time.time()
+            n = 0
+            with open(arq, "rb") as f:
+                while n < 64 * 1024 * 1024:
+                    b = f.read(4 * 1024 * 1024)
+                    if not b:
+                        break
+                    n += len(b)
+            d["leitura_mbs"] = round(n / 1048576.0 / (time.time() - t + 1e-9), 0)
+    except Exception:
+        pass
+    return d
 
 
 class Aparelho:

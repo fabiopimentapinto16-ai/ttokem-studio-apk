@@ -1,5 +1,5 @@
 # Ttoken - REFINADOR NA NUVEM (Colab, GPU T4 gratis). Cole numa celula do Colab e rode.
-# O celular faz o rascunho offline; aqui so o detalhe: SDXL-Turbo img2img (2-4 passos, ~1-2 s por imagem).
+# Gera a imagem inteira (/gerar) ou refina um rascunho (/refinar) com SDXL-Turbo: ~1-2 s por imagem na GPU T4.
 # Sem token: usa o tunel gratis "cloudflared" (trycloudflare.com). Ele imprime o link no fim.
 # Licenca do SDXL-Turbo: uso nao comercial/pesquisa (veja a pagina do modelo).
 import subprocess, sys, os, re, time, threading, base64, io
@@ -20,12 +20,13 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "tran
 
 import torch
 from PIL import Image
-from diffusers import AutoPipelineForImage2Image
+from diffusers import AutoPipelineForImage2Image, AutoPipelineForText2Image
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, PlainTextResponse
 import uvicorn
 
-pipe = AutoPipelineForImage2Image.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16").to("cuda")
+pipe_t = AutoPipelineForText2Image.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16").to("cuda")
+pipe = AutoPipelineForImage2Image.from_pipe(pipe_t)          # reaproveita os mesmos pesos (sem gastar mais memoria)
 app = FastAPI()
 TRAVA = threading.Lock()
 
@@ -33,6 +34,19 @@ TRAVA = threading.Lock()
 @app.get("/saude")
 def saude():
     return PlainTextResponse("ttoken-refinador ok")
+
+
+@app.post("/gerar")
+async def gerar(req: Request):
+    """Texto -> imagem inteira (SDXL-Turbo, 512 px, 4 passos, ~1-2 s numa T4)."""
+    d = await req.json()
+    sem = d.get("semente")
+    g = torch.Generator("cuda").manual_seed(int(sem)) if sem is not None else None
+    with TRAVA:
+        out = pipe_t(prompt=str(d.get("prompt", ""))[:300], num_inference_steps=4, guidance_scale=0.0,
+                     width=512, height=512, generator=g).images[0]
+    b = io.BytesIO(); out.save(b, "PNG")
+    return Response(b.getvalue(), media_type="image/png")
 
 
 @app.post("/refinar")

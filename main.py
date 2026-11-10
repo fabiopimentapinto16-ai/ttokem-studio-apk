@@ -1599,12 +1599,12 @@ class TtokenApp(App):
         self.est_edit.bind(on_release=self._est_mostrar_cadastro)
         # --- chat do Maestro
         self.est_chat = Glass(border=alpha(CYAN, 0.45))
-        self.est_chat.add_widget(tlabel("ESTUDIO: IMAGEM E VIDEO NO SEU CELULAR, SEM INTERNET", 11, CYAN,
+        self.est_chat.add_widget(tlabel("ESTUDIO: IMAGEM E VIDEO  (nuvem gratis se ligada; senao no celular)", 11, CYAN,
                                         bold=True))
         self.est_lista = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(6))
         self.est_lista.bind(minimum_height=self.est_lista.setter("height"))
         self.est_chat.add_widget(self.est_lista)
-        self.est_inp = TextInput(hint_text="Escreva aqui em ingles. Ex: a red apple on a wooden table",
+        self.est_inp = TextInput(hint_text="Escreva em portugues (ou qualquer idioma). Ex: uma maca vermelha em uma mesa de madeira",
                                  multiline=True, size_hint_y=None, height=dp(80),
                                  font_size=sp(15), background_normal="", background_active="",
                                  background_color=(0, 0, 0, 0), foreground_color=TEXT,
@@ -1638,9 +1638,11 @@ class TtokenApp(App):
         self.est_mais.bind(minimum_height=self.est_mais.setter("height"))
         self.est_mais.add_widget(self.est_btn)
         self.est_mais.add_widget(self.est_off)
-        self.est_mais_chip = Chip("MAIS OPCOES (servidor, Colab) +", height=36)
+        self.est_mais_chip = Chip("MAIS OPCOES (servidor, Colab) +", height=36)   # guardado, fora da tela
         self.est_mais_chip.bind(on_release=self._est_alternar_mais)
-        self.est_chat.add_widget(self.est_mais_chip)
+        self.est_nuvem_chip = Chip("NUVEM GRATIS (Colab): colar o link +", height=40)
+        self.est_nuvem_chip.bind(on_release=self._est_mostrar_cadastro)
+        self.est_chat.add_widget(self.est_nuvem_chip)
         self.est_res = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
         self.est_res.bind(minimum_height=self.est_res.setter("height"))
         self.est_chat.add_widget(self.est_res)
@@ -1825,7 +1827,13 @@ class TtokenApp(App):
         import aparelho
         ap = aparelho.Aparelho(self._pasta_dados())
         if ap.medir_se_preciso():
-            self._ui(self._est_msg, "📊 Primeira vez neste celular: medi a velocidade (%.0f GFLOPS)." % ap.d.get("gflops", 0))
+            self._ui(self._est_msg, "📊 Primeira vez neste celular: medi a velocidade (%.1f GFLOPS)." % ap.d.get("gflops", 0))
+            try:
+                dg = aparelho.diagnostico(getattr(offline_img, "achar_pasta", lambda: None)())
+                self._ui(self._est_msg, "🔬 matmul %.1f GFLOPS | conta simples %s M/s | int8->float %s M/s | leitura %s MB/s" % (
+                    dg.get("gflops", 0), dg.get("conta_simples_mps", "?"), dg.get("dequant_mps", "?"), dg.get("leitura_mbs", "?")))
+            except Exception:
+                pass
         plano = ap.decidir("max" if self._est_qual == "max" else "rapida", offline_img.servidor_ativo())
         plano["ap"] = ap
         self._ui(self._est_msg, plano["texto"])
@@ -1846,8 +1854,29 @@ class TtokenApp(App):
             return r.json().get("resposta", "")
         return cerebro
 
+    def _est_link_nuvem(self):
+        """Link vivo do refinador/gerador no Colab (colado a mao), ou '' se nao houver / estiver desligado."""
+        try:
+            import nuvem
+            return nuvem.achar_link(maestro_ttoken.carregar_links(self._pasta_dados())["colab"], None)
+        except Exception:
+            return ""
+
     def _est_gerar_medindo(self, offline_img, plano, prompt, saida, semente, log):
         """Gera 1 imagem e ensina o perfil (tempo real; se faltar memoria, lembra para nao tentar de novo)."""
+        alvo = self._est_link_nuvem()
+        if alvo:                                              # GPU na nuvem: segundos e qualidade bem maior
+            import nuvem
+            self._ui(self._est_msg, "☁️ Gerando na GPU da nuvem (qualidade cinema)...")
+            t_n = time.time()
+            novo = nuvem.gerar(prompt, alvo, saida, semente=semente,
+                               chave=maestro_ttoken.carregar_links(self._pasta_dados())["chave"])
+            if novo:
+                self._ui(self._est_msg, "☁️ Pronta em %.0f s." % (time.time() - t_n))
+                return novo
+            self._ui(self._est_msg, "☁️ Nuvem nao respondeu: vou gerar no celular (mais lento).")
+        if plano is None:
+            plano = self._est_plano_aparelho(offline_img)
         t0 = time.time()
         try:
             offline_img.gerar_png(prompt, saida, semente=semente, lado=plano["lado"], log=log, cache_mb=plano["cache_mb"])
@@ -1862,7 +1891,7 @@ class TtokenApp(App):
         try:
             import nuvem
             links = maestro_ttoken.carregar_links(self._pasta_dados())
-            alvo = nuvem.achar_link(links["colab"], API)      # colado a mao, ou o que o Colab registrou sozinho
+            alvo = nuvem.achar_link(links["colab"], None)
             if not alvo:
                 if not getattr(self, "_avisou_nuvem", False):
                     self._avisou_nuvem = True
@@ -1893,7 +1922,7 @@ class TtokenApp(App):
         try:
             import offline_img
             ok, motivo = offline_img.disponivel()
-            if not ok:
+            if not ok and not self._est_link_nuvem():
                 self._ui(self._motor, False)
                 if motivo == "sem_acesso":
                     self._ui(self._est_msg, "🔐 Falta uma permissao: abri a tela do Android. Ligue "
@@ -1910,8 +1939,7 @@ class TtokenApp(App):
             if aviso:
                 self._ui(self._est_msg, "ℹ️ " + aviso)
             self._ui(self._est_msg, "📝 Prompt (%s): %s" % (roteirista.ULTIMA_FONTE[0], prompt_en[:140]))
-            plano = self._est_plano_aparelho(offline_img)
-            saida = self._est_gerar_medindo(offline_img, plano, prompt_en, saida, None,
+            saida = self._est_gerar_medindo(offline_img, None, prompt_en, saida, None,
                                             lambda t: self._ui(self._est_msg, "⏱️ " + str(t)))
             self._ui(self._est_fim, {"arquivo": saida, "url": "", "origem": "celular"})
         except Exception as e:
@@ -1937,7 +1965,7 @@ class TtokenApp(App):
             import video_cenas
             import tts_android
             ok, motivo = offline_img.disponivel()
-            if not ok:
+            if not ok and not self._est_link_nuvem():
                 self._ui(self._motor, False)
                 if motivo == "sem_acesso":
                     self._ui(self._est_msg, "🔐 Falta uma permissao: abri a tela do Android. Ligue "
@@ -1954,8 +1982,8 @@ class TtokenApp(App):
                 self._ui(self._est_msg, "ℹ️ " + plano["aviso"])
             pasta = os.path.join(self._pasta_dados(), "cenas_%s" % time.strftime("%Y%m%d_%H%M%S"))
             os.makedirs(pasta, exist_ok=True)
-            plano_ap = self._est_plano_aparelho(offline_img)
-            lado_img = plano_ap["lado"]
+            plano_ap = None if self._est_link_nuvem() else self._est_plano_aparelho(offline_img)
+            lado_img = plano_ap["lado"] if plano_ap else 512
             imgs = []
             import zlib
             semente_base = zlib.crc32(texto.encode("utf-8")) % 100000     # mesma semente em todas as cenas = mesmo "clima"

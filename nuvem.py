@@ -57,6 +57,8 @@ def achar_link(manual, api, pasta_cache_s=120):
     import time
     if manual and pronto(manual):
         return _base(manual)
+    if not api:
+        return ""
     if _CACHE["url"] and time.time() - _CACHE["ts"] < pasta_cache_s:
         return _CACHE["url"]
     url = ""
@@ -69,3 +71,21 @@ def achar_link(manual, api, pasta_cache_s=120):
         url = ""
     _CACHE["url"], _CACHE["ts"] = url, time.time()
     return url
+
+
+def gerar(prompt, url, saida, semente=None, timeout=90, chave=""):
+    """Imagem inteira na GPU do Colab (SDXL-Turbo, 512 px, ~1-2 s). Devolve o caminho ou None (aí o celular gera)."""
+    u = _base(url)
+    try:
+        corpo = json.dumps({"prompt": prompt, "semente": semente}).encode("utf-8")
+        req = urllib.request.Request(u + "/gerar", data=corpo, method="POST", headers={
+            "Content-Type": "application/json", "X-Chave": chave or "", "ngrok-skip-browser-warning": "1"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            dados = r.read()
+        if not dados.startswith(b"\x89PNG"):
+            return None
+        with open(saida, "wb") as f:
+            f.write(dados)
+        return saida
+    except Exception:
+        return None
