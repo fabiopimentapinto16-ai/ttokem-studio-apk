@@ -10,7 +10,6 @@ try:
     drive.mount("/content/drive")
     PASTA = "/content/drive/MyDrive/ttoken_refinador"
     os.makedirs(PASTA, exist_ok=True)
-    os.environ["HF_HOME"] = PASTA + "/hf"
 except Exception as e:
     print("Drive nao montou (%s): sigo sem guardar." % e)
     PASTA = "."
@@ -25,7 +24,27 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, PlainTextResponse
 import uvicorn
 
-pipe_t = AutoPipelineForText2Image.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16, variant="fp16").to("cuda")
+import shutil
+
+
+def _carregar(cache, **kw):
+    return AutoPipelineForText2Image.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16,
+                                                     variant="fp16", cache_dir=cache, **kw).to("cuda")
+
+
+CACHE_DRIVE = PASTA + "/hf_modelo"
+try:
+    pipe_t = _carregar(CACHE_DRIVE)
+except Exception as e:                                   # arquivo corrompido/incompleto no Drive: apaga e baixa de novo
+    print("Cache do Drive com problema (%s). Apagando e baixando de novo..." % str(e)[:80], flush=True)
+    shutil.rmtree(CACHE_DRIVE, ignore_errors=True)
+    shutil.rmtree(PASTA + "/hf", ignore_errors=True)
+    try:
+        pipe_t = _carregar(CACHE_DRIVE, force_download=True)
+    except Exception as e2:                              # Drive nao serve: usa o disco do Colab (rapido, ~1 min)
+        print("Drive nao serviu (%s). Baixando no disco do Colab..." % str(e2)[:80], flush=True)
+        shutil.rmtree(CACHE_DRIVE, ignore_errors=True)
+        pipe_t = _carregar("/content/hf_local", force_download=True)
 pipe = AutoPipelineForImage2Image.from_pipe(pipe_t)          # reaproveita os mesmos pesos (sem gastar mais memoria)
 app = FastAPI()
 TRAVA = threading.Lock()
