@@ -4,15 +4,19 @@
 # Licenca do SDXL-Turbo: uso nao comercial/pesquisa (veja a pagina do modelo).
 import subprocess, sys, os, re, time, threading, base64, io
 
-# Guarda o modelo (7 GB) e o tunel no seu Google Drive: nas proximas vezes nao baixa de novo.
+# O modelo (~7 GB) baixa no disco do Colab (rapido, ~1-2 min). NAO vai para o Drive: ele nao cabe na maioria das contas.
+# Aqui so limpamos o que ficou la de tentativas anteriores, para liberar espaco, e guardamos o tunel (pequeno).
+PASTA = "."
 try:
     from google.colab import drive
     drive.mount("/content/drive")
     PASTA = "/content/drive/MyDrive/ttoken_refinador"
     os.makedirs(PASTA, exist_ok=True)
+    import shutil as _sh
+    for velho in ("hf_modelo", "hf"):
+        _sh.rmtree(PASTA + "/" + velho, ignore_errors=True)
 except Exception as e:
-    print("Drive nao montou (%s): sigo sem guardar." % e)
-    PASTA = "."
+    print("Drive nao montou (%s): sigo sem ele." % e)
 
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "diffusers", "transformers", "accelerate",
                 "fastapi", "uvicorn", "pillow"], check=True)
@@ -24,27 +28,18 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response, PlainTextResponse
 import uvicorn
 
-import shutil
-
-
-def _carregar(cache, **kw):
+def _carregar(**kw):
     return AutoPipelineForText2Image.from_pretrained("stabilityai/sdxl-turbo", torch_dtype=torch.float16,
-                                                     variant="fp16", cache_dir=cache, **kw).to("cuda")
+                                                     variant="fp16", cache_dir="/content/hf_local", **kw).to("cuda")
 
 
-CACHE_DRIVE = PASTA + "/hf_modelo"
 try:
-    pipe_t = _carregar(CACHE_DRIVE)
-except Exception as e:                                   # arquivo corrompido/incompleto no Drive: apaga e baixa de novo
-    print("Cache do Drive com problema (%s). Apagando e baixando de novo..." % str(e)[:80], flush=True)
-    shutil.rmtree(CACHE_DRIVE, ignore_errors=True)
-    shutil.rmtree(PASTA + "/hf", ignore_errors=True)
-    try:
-        pipe_t = _carregar(CACHE_DRIVE, force_download=True)
-    except Exception as e2:                              # Drive nao serve: usa o disco do Colab (rapido, ~1 min)
-        print("Drive nao serviu (%s). Baixando no disco do Colab..." % str(e2)[:80], flush=True)
-        shutil.rmtree(CACHE_DRIVE, ignore_errors=True)
-        pipe_t = _carregar("/content/hf_local", force_download=True)
+    pipe_t = _carregar()
+except Exception as e:                                   # download incompleto: apaga e baixa de novo
+    print("Modelo com problema (%s). Baixando de novo..." % str(e)[:80], flush=True)
+    import shutil
+    shutil.rmtree("/content/hf_local", ignore_errors=True)
+    pipe_t = _carregar(force_download=True)
 pipe = AutoPipelineForImage2Image.from_pipe(pipe_t)          # reaproveita os mesmos pesos (sem gastar mais memoria)
 app = FastAPI()
 TRAVA = threading.Lock()
